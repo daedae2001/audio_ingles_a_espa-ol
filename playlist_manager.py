@@ -112,10 +112,18 @@ class PlaylistManager:
             channel.last_check = datetime.now().isoformat()
 
     async def check_all_channels(self) -> None:
+        # Limitar el número de conexiones simultáneas
+        MAX_CONCURRENT = 50  # Ajustar según necesidad y recursos del sistema
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+        
+        async def check_channel_with_semaphore(channel):
+            async with semaphore:
+                return await self.check_channel(channel)
+        
         # Crear tareas para verificar cada canal
         tasks = []
         for channel in self.channels:
-            task = asyncio.create_task(self.check_channel(channel))
+            task = asyncio.create_task(check_channel_with_semaphore(channel))
             tasks.append(task)
         
         # Procesar las tareas con manejo de errores
@@ -123,19 +131,47 @@ class PlaylistManager:
         failed_tasks = 0
         error_types = {}
         
-        for task in asyncio.as_completed(tasks):
+        try:
+            for task in asyncio.as_completed(tasks):
+                try:
+                    await task
+                    completed_tasks += 1
+                except asyncio.CancelledError:
+                    # Cancelar todas las tareas pendientes
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    raise  # Re-raise para que se maneje en el nivel superior
+                except Exception as e:
+                    # Registrar el tipo de error para análisis
+                    error_type = type(e).__name__
+                    if error_type not in error_types:
+                        error_types[error_type] = 0
+                    error_types[error_type] += 1
+                    
+                    print(f"Error en tarea de verificación: {e}")
+                    failed_tasks += 1
+        except asyncio.CancelledError:
+            print("Verificación cancelada. Limpiando recursos...")
+            # Asegurarse de que todas las tareas se cancelen
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
             try:
-                await task
-                completed_tasks += 1
+                # Esperar a que todas las tareas se cancelen (con timeout)
+                await asyncio.wait(tasks, timeout=5)
             except Exception as e:
-                # Registrar el tipo de error para análisis
-                error_type = type(e).__name__
-                if error_type not in error_types:
-                    error_types[error_type] = 0
-                error_types[error_type] += 1
-                
-                print(f"Error en tarea de verificación: {e}")
-                failed_tasks += 1
+                print(f"Error durante la cancelación de tareas: {e}")
+            raise
+        finally:
+            # Limpiar recursos
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
         
         # Mostrar resumen de errores
         if error_types:
@@ -161,8 +197,7 @@ class PlaylistManager:
                 print(f"Se ha creado una copia de seguridad en: {backup_path}")
             except Exception as backup_error:
                 print(f"No se pudo crear copia de seguridad: {backup_error}")
-
-
+    
     def save_working_channels(self, file_path: str) -> None:
         working_channels = [ch for ch in self.channels if ch.status in ['online', 'slow']]
         if working_channels:
@@ -196,27 +231,71 @@ class PlaylistManager:
             current_channel = None
             line_number = 0
             total_lines = len(lines)
+            processed_lines = ['#EXTM3U']
+            needs_processing = False
+            channel_count = 1
             
-            for line in lines:
+            # Procesar cada línea y completar metadatos faltantes
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+                if not line:
+                    i += 1
+                    continue
+                
+                # Si es una línea EXTINF, mantenerla y su URL
+                if line.startswith('#EXTINF'):
+                    processed_lines.append(line)
+                    # Buscar la siguiente línea no vacía que debería ser la URL
+                    while i + 1 < len(lines):
+                        i += 1
+                        next_line = lines[i].strip()
+                        if next_line and not next_line.startswith('#'):
+                            processed_lines.append(next_line)
+                            break
+                        elif next_line:
+                            processed_lines.append(next_line)
+                # Si es una URL sin metadatos, crear los metadatos
+                elif line.startswith(('http://', 'https://', 'rtsp://', 'rtmp://', 'mmsh://')):
+                    needs_processing = True
+                    new_extinf = f'#EXTINF:-1 tvg-name="Canal {channel_count}" group-title="Sin Grupo" tvg-status="online",Canal {channel_count}'
+                    processed_lines.append(new_extinf)
+                    processed_lines.append(line)
+                    channel_count += 1
+                else:
+                    processed_lines.append(line)
+                i += 1
+            
+            # Si se encontraron URLs sin metadatos, guardar la nueva lista procesada
+            if needs_processing:
+                new_file_path = os.path.join(os.path.dirname(file_path), 'processed_' + os.path.basename(file_path))
+                try:
+                    with open(new_file_path, 'w', encoding='utf-8') as f:
+                        f.write('\n'.join(processed_lines))
+                    print(f"Lista procesada guardada en: {new_file_path}")
+                except Exception as e:
+                    print(f"Error al guardar la lista procesada: {e}")
+            
+            # Procesar la lista final
+            current_channel = None
+            for line in processed_lines:
                 line_number += 1
                 if progress_callback:
-                    progress_callback((line_number / total_lines) * 100, len(self.channels))
-                    
-                line = line.strip()
-                if not line:
-                    continue
-                    
+                    progress_callback((line_number / len(processed_lines)) * 100, len(self.channels))
+                
                 try:
                     if line.startswith('#EXTINF'):
                         # Extraer nombre y metadatos del canal
-                        name_match = re.search('tvg-name="([^"]+)"', line)
-                        group_match = re.search('group-title="([^"]+)"', line)
-                        logo_match = re.search('tvg-logo="([^"]+)"', line)
+                        name_match = re.search('tvg-name="([^"]*)"', line)
+                        group_match = re.search('group-title="([^"]*)"', line)
+                        logo_match = re.search('tvg-logo="([^"]*)"', line)
                         
                         name = name_match.group(1) if name_match else ''
                         if not name:
                             # Buscar el nombre al final de la línea
                             name = line.split(',')[-1].strip()
+                            if not name:
+                                name = f'Canal {len(self.channels) + 1}'
                         
                         group = group_match.group(1) if group_match else 'Sin Grupo'
                         logo = logo_match.group(1) if logo_match else None
@@ -226,24 +305,27 @@ class PlaylistManager:
                         if group not in self.groups:
                             self.groups.append(group)
                             
-                    elif line.startswith('http') or line.startswith('rtmp'):
-                        if current_channel:
-                            try:
-                                # Validar la URL antes de asignarla
-                                parsed_url = urllib.parse.urlparse(line)
-                                if not parsed_url.scheme or not parsed_url.netloc:
-                                    print(f"URL malformada en línea {line_number}: {line}")
-                                    # Aún así guardar la URL, pero marcar el canal como problemático
-                                    current_channel.status = 'offline'
-                                    current_channel.url = line
-                                else:
-                                    current_channel.url = line
-                                self.channels.append(current_channel)
-                                current_channel = None
-                            except Exception as url_error:
-                                print(f"Error al procesar URL en línea {line_number}: {line}")
-                                print(f"Detalle del error: {str(url_error)}")
-                                # Intentar guardar el canal de todos modos
+                    elif line.startswith(('http://', 'https://', 'rtsp://', 'rtmp://', 'mmsh://')):
+                        # Si no hay un canal actual pero hay una URL, crear un canal nuevo
+                        if not current_channel:
+                            name = f'Canal {len(self.channels) + 1}'
+                            current_channel = Channel(name=name, url='', group='Sin Grupo')
+                            if 'Sin Grupo' not in self.groups:
+                                self.groups.append('Sin Grupo')
+                        
+                        try:
+                            # Validar la URL antes de asignarla
+                            parsed_url = urllib.parse.urlparse(line)
+                            if not parsed_url.scheme or not parsed_url.netloc:
+                                print(f"URL malformada en línea {line_number}: {line}")
+                                current_channel.status = 'offline'
+                            current_channel.url = line
+                            self.channels.append(current_channel)
+                            current_channel = None
+                        except Exception as url_error:
+                            print(f"Error al procesar URL en línea {line_number}: {line}")
+                            print(f"Detalle del error: {str(url_error)}")
+                            if current_channel:
                                 current_channel.status = 'offline'
                                 current_channel.url = line
                                 self.channels.append(current_channel)
@@ -251,7 +333,6 @@ class PlaylistManager:
                 except Exception as line_error:
                     print(f"Error procesando línea {line_number}: {line}")
                     print(f"Detalle del error: {str(line_error)}")
-                    # Continuar con la siguiente línea
         
         try:
             with open(file_path, 'r', encoding='utf-8') as f:

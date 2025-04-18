@@ -1,10 +1,11 @@
 import sys
+import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QListWidget, QLabel, QPushButton,
                              QComboBox, QFileDialog, QListWidgetItem, QSizePolicy,
-                             QProgressDialog, QInputDialog, QMessageBox, QMenu)
+                             QProgressDialog, QInputDialog, QMessageBox, QMenu, QGridLayout)
 from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint
-from PyQt6.QtGui import QKeyEvent, QColor, QCursor, QAction
+from PyQt6.QtGui import QKeyEvent, QColor, QCursor, QAction, QIcon
 import vlc
 import asyncio
 from playlist_manager import PlaylistManager, Channel
@@ -14,19 +15,41 @@ class TVIPPlayer(QMainWindow):
         super().__init__()
         self.setWindowTitle('TV IP Player')
         self.setGeometry(100, 100, 1200, 700)
-        self.setMinimumSize(900, 600)  # Establecer tamaño mínimo para la ventana
+        self.setMinimumSize(900, 600)
         self.installEventFilter(self)
         
         # Variables para control de panel lateral
         self.sidebar_visible = True
         self.is_fullscreen_mode = False
-        self.sidebar_hover_margin = 20  # píxeles desde el borde izquierdo para activar
+        self.sidebar_hover_margin = 20
+        self.sidebar_position = "right"  # Nueva variable para controlar la posición del sidebar (right o left)
         self.mouse_check_timer = QTimer(self)
         self.mouse_check_timer.timeout.connect(self.check_mouse_position)
-        self.mouse_check_timer.start(100)  # verificar cada 100ms
+        self.mouse_check_timer.start(100)
+        
+        # Variables para control de video
+        self.current_audio_track = 0
+        self.audio_tracks = []
+        self.current_aspect_ratio = 'auto'
+        self.current_scale = 1.0
         
         # Inicializar el gestor de listas
         self.playlist_manager = PlaylistManager()
+        
+        # Inicializar VLC con opciones específicas
+        vlc_args = [
+            '--embedded-video',  # Forzar video embebido
+            '--no-snapshot-preview',  # Deshabilitar vista previa de capturas
+            '--avcodec-hw=none',  # Deshabilitar decodificación por hardware
+            '--no-direct3d11-hw-blending',  # Deshabilitar mezcla por hardware en Direct3D11
+            '--no-direct3d11',  # Deshabilitar Direct3D11
+            '--quiet',  # Reducir mensajes de registro
+            '--no-video-title-show',  # No mostrar título de video
+            '--no-fullscreen',  # Evitar pantalla completa automática
+            '--video-on-top',  # Mantener video encima
+        ]
+        self.instance = vlc.Instance(vlc_args)
+        self.player = self.instance.media_player_new()
         
         # Widget principal
         main_widget = QWidget()
@@ -36,8 +59,8 @@ class TVIPPlayer(QMainWindow):
         # Panel lateral para lista de canales
         self.sidebar = QWidget()
         sidebar_layout = QVBoxLayout(self.sidebar)
-        self.sidebar.setMinimumWidth(280)  # Ancho mínimo para el panel lateral
-        self.sidebar.setMaximumWidth(350)  # Ancho máximo para el panel lateral
+        self.sidebar.setMinimumWidth(280)
+        self.sidebar.setMaximumWidth(350)
         
         # Filtro por grupos
         self.group_filter = QComboBox()
@@ -50,11 +73,10 @@ class TVIPPlayer(QMainWindow):
         sidebar_layout.addWidget(QLabel('Canales:'))
         sidebar_layout.addWidget(self.channel_list)
         
-        # Botones de control - Organizados en grid para mejor visualización
-        buttons_layout = QVBoxLayout()
+        # Botones de control
+        buttons_grid = QGridLayout()
         
         # Primera fila de botones
-        top_row_layout = QHBoxLayout()
         load_button = QPushButton('Cargar Lista M3U')
         load_button.clicked.connect(self.load_playlist)
         load_button.setMinimumWidth(140)
@@ -62,11 +84,10 @@ class TVIPPlayer(QMainWindow):
         download_button.clicked.connect(self.download_playlist)
         download_button.setMinimumWidth(140)
         
-        top_row_layout.addWidget(load_button)
-        top_row_layout.addWidget(download_button)
+        buttons_grid.addWidget(load_button, 0, 0)
+        buttons_grid.addWidget(download_button, 0, 1)
         
         # Segunda fila de botones
-        bottom_row_layout = QHBoxLayout()
         check_button = QPushButton('Verificar Canales')
         check_button.clicked.connect(self.check_channels)
         check_button.setMinimumWidth(140)
@@ -74,50 +95,93 @@ class TVIPPlayer(QMainWindow):
         save_working_button.clicked.connect(self.save_working_channels)
         save_working_button.setMinimumWidth(140)
         
-        bottom_row_layout.addWidget(check_button)
-        bottom_row_layout.addWidget(save_working_button)
+        buttons_grid.addWidget(check_button, 1, 0)
+        buttons_grid.addWidget(save_working_button, 1, 1)
         
-        # Agregar las filas al layout principal de botones
-        buttons_layout.addLayout(top_row_layout)
-        buttons_layout.addLayout(bottom_row_layout)
+        # Botón rojo en tercera fila centrada
+        process_button = QPushButton('Procesar y Filtrar Canales')
+        process_button.setMinimumWidth(140)
+        process_button.setStyleSheet('background-color: #C62828; color: white; font-weight: bold;')
+        process_button.clicked.connect(self.process_and_filter_channels_background)
+        buttons_grid.addWidget(process_button, 2, 0, 1, 2)
         
+        # Agregar el grid al layout principal
         buttons_container = QWidget()
-        buttons_container.setLayout(buttons_layout)
+        buttons_container.setLayout(buttons_grid)
         sidebar_layout.addWidget(buttons_container)
         
         # Área de reproducción
-        video_container = QWidget()
-        video_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        video_layout = QVBoxLayout(video_container)
-        video_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Instancia de VLC
-        self.instance = vlc.Instance()
-        self.player = self.instance.media_player_new()
-
+        self.video_container = QWidget()
+        self.video_layout = QVBoxLayout(self.video_container)
+        self.video_layout.setContentsMargins(0, 0, 0, 0)
+        self.video_layout.setSpacing(0)
+        layout.addWidget(self.video_container)
+        
         # Widget para el video
         self.video_widget = QWidget()
+        self.video_widget.setStyleSheet("background-color: black;")
         self.video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.video_widget.setStyleSheet('background-color: black;')
+        self.video_widget.setMouseTracking(True)
         self.video_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.video_widget.customContextMenuRequested.connect(self.show_video_context_menu)
-        video_layout.addWidget(self.video_widget)
+        self.video_layout.addWidget(self.video_widget)
         
-        # Controles de video
-        controls = QWidget()
-        controls_layout = QHBoxLayout(controls)
-        self.fullscreen_button = QPushButton('Pantalla Completa')
-        self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
-        controls_layout.addWidget(self.fullscreen_button)
-        video_layout.addWidget(controls)
+        # Configurar el reproductor VLC para usar el widget de video
+        if sys.platform.startswith('win'):
+            self.player.set_hwnd(int(self.video_widget.winId()))
+        elif sys.platform.startswith('linux'):
+            self.player.set_xwindow(self.video_widget.winId())
+        elif sys.platform.startswith('darwin'):
+            self.player.set_nsobject(int(self.video_widget.winId()))
         
-        # Agregar widgets al layout principal
-        layout.addWidget(self.sidebar)
-        layout.addWidget(video_container)
+        # Overlay transparente para capturar clic derecho
+        self.overlay_widget = QWidget(self.video_widget)
+        self.overlay_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.overlay_widget.setStyleSheet("background: transparent;")
+        self.overlay_widget.setMouseTracking(True)
+        self.overlay_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+        self.overlay_widget.show()
+        self.overlay_widget.resize(self.video_widget.size())
+        self.overlay_widget.installEventFilter(self)
+
+        # Botón flotante para mostrar menú contextual sobre el video (hijo de la ventana principal)
+        self.menu_button = QPushButton(self)
+        self.menu_button.setIcon(QIcon.fromTheme('application-menu'))
+        self.menu_button.setStyleSheet('''
+            QPushButton {
+                background: rgba(255,255,255,0.1);
+                border: none;
+                border-radius: 12px;
+                padding: 2px;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,0.4);
+            }
+        ''')
+        self.menu_button.setFixedSize(24, 24)
+        self.menu_button.setToolTip('Mostrar menú de video')
+        self.menu_button.clicked.connect(lambda: self.show_video_context_menu(self.menu_button.rect().bottomRight()))
+        self.menu_button.raise_()
+        self.menu_button.show()
+        self.update_menu_button_position()
         
-        # Conectar señales
-        self.channel_list.itemClicked.connect(self.play_channel)
+        if self.sidebar_position == "right":
+            layout.addWidget(self.sidebar)
+        else:
+            layout.addWidget(self.sidebar, 0, 0)
         
+        # Conectar eventos de canales
+        self.channel_list.itemDoubleClicked.connect(self.play_channel)
+        self.group_filter.currentTextChanged.connect(self.update_channel_list)
+        
+        # Timer para verificar las pistas de audio disponibles
+        self.audio_check_timer = QTimer(self)
+        self.audio_check_timer.timeout.connect(self.check_audio_tracks)
+        self.audio_check_timer.start(1000)  # Verificar cada segundo
+        
+        # Instalar event filter global para clic derecho sobre video (VLC)
+        QApplication.instance().installEventFilter(self)
+
     def load_playlist(self):
         file_name, _ = QFileDialog.getOpenFileName(self, 'Abrir Lista M3U',
                                                  '', 'M3U Files (*.m3u *.m3u8)')
@@ -212,117 +276,129 @@ class TVIPPlayer(QMainWindow):
             self.channel_list.setItemWidget(item, channel_widget)
             
     def play_channel(self, item):
-        channel: Channel = item.data(Qt.ItemDataRole.UserRole)
-        if channel and channel.url:
-            try:
-                # Detener reproducción actual si existe
-                if self.player.is_playing():
-                    self.player.stop()
+        try:
+            channel = item.data(Qt.ItemDataRole.UserRole)
+            if channel and channel.url:
+                print(f"Iniciando reproducción de canal. Estado actual: isFullScreen={self.isFullScreen()}, is_fullscreen_mode={self.is_fullscreen_mode}")
                 
-                # Crear nuevo medio
+                # Asegurar que estamos en modo ventana normal antes de reproducir
+                if self.isFullScreen():
+                    print("Forzando salida de pantalla completa antes de reproducir")
+                    self.showNormal()
+                    if hasattr(self, 'normal_geometry'):
+                        self.setGeometry(self.normal_geometry)
+                    self.is_fullscreen_mode = False
+                    if hasattr(self, 'sidebar'):
+                        self.sidebar.show()
+                
+                # Configurar opciones de reproducción específicas para este medio
                 media = self.instance.media_new(channel.url)
-                self.player.set_media(media)
+                media.add_option('avcodec-hw=none')  # Deshabilitar decodificación por hardware
+                media.add_option('no-direct3d11-hw-blending')  # Deshabilitar mezcla por hardware
+                media.add_option('no-direct3d11')  # Deshabilitar Direct3D11
+                media.add_option('no-fullscreen')  # Evitar pantalla completa automática
+                media.add_option('embedded-video')  # Forzar video embebido
                 
-                # Configurar el widget de video
-                if sys.platform == 'win32':
+                # Asegurar que el reproductor esté configurado para usar el widget de video
+                if sys.platform.startswith('win'):
                     self.player.set_hwnd(int(self.video_widget.winId()))
+                elif sys.platform.startswith('linux'):
+                    self.player.set_xwindow(self.video_widget.winId())
+                elif sys.platform.startswith('darwin'):
+                    self.player.set_nsobject(int(self.video_widget.winId()))
                 
-                # Iniciar reproducción
+                self.player.set_media(media)
                 self.player.play()
                 
-                # Programar una verificación de pistas de audio después de que el medio se haya cargado
-                QTimer.singleShot(2000, self.check_audio_tracks)
+                # Verificar nuevamente después de iniciar la reproducción
+                print(f"Después de iniciar reproducción: isFullScreen={self.isFullScreen()}, is_fullscreen_mode={self.is_fullscreen_mode}")
                 
-                print(f"Reproduciendo canal: {channel.name}")
-            except Exception as e:
-                print(f"Error al reproducir canal: {e}")
-                QMessageBox.warning(self, "Error de Reproducción", 
-                                  f"No se pudo reproducir el canal {channel.name}:\n{str(e)}")
-    
+                # Programar una verificación adicional después de un breve retraso
+                QTimer.singleShot(100, self._check_fullscreen_after_play)
+                
+        except Exception as e:
+            print(f"Error al reproducir canal: {e}")
+            QMessageBox.warning(self, "Error de Reproducción", 
+                              f"No se pudo reproducir el canal: {str(e)}")
+
     def check_audio_tracks(self):
-        """Verifica las pistas de audio disponibles después de cargar un medio"""
-        try:
-            if not self.player.get_media():
-                return
-                
-            # Obtener información de pistas de audio
-            audio_tracks_count = self.player.audio_get_track_count()
-            current_track = self.player.audio_get_track()
-            
-            print(f"Pistas de audio detectadas: {audio_tracks_count}, pista actual: {current_track}")
-            
-            # Si hay múltiples pistas de audio, mostrar notificación
-            if audio_tracks_count > 1:
-                tracks_info = "Este canal tiene múltiples pistas de audio disponibles.\n"
-                tracks_info += "Haga clic derecho sobre el video para cambiar el idioma del audio."
-                
-                QMessageBox.information(self, "Múltiples Pistas de Audio", tracks_info)
-        except Exception as e:
-            print(f"Error al verificar pistas de audio: {e}")
-            # No mostrar mensaje de error al usuario para no interrumpir la experiencia
+        if not self.player.is_playing():
+            return
         
+        media = self.player.get_media()
+        if not media:
+            return
+        
+        # Obtener la lista de pistas de audio
+        tracks = []
+        for i in range(self.player.audio_get_track_count()):
+            track_description = self.player.audio_get_track_description()[i]
+            if track_description:
+                tracks.append(track_description)
+        
+        # Actualizar el botón si hay múltiples pistas
+        if len(tracks) > 1:
+            current_track = self.player.audio_get_track()
+            current_track_info = next((t for t in tracks if t[0] == current_track), None)
+            # if current_track_info:
+            #     print(f"Pista de audio actual: {current_track_info[1].decode()}")
+            self.audio_tracks = tracks
+        else:
+            self.audio_tracks = []
+
     def toggle_fullscreen(self):
-        try:
-            if self.isFullScreen():
-                # Salir del modo pantalla completa
-                self.showNormal()
-                # Restaurar banderas de ventana normales
-                self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.FramelessWindowHint)
-                self.show()
-                
-                if self.player:
-                    try:
-                        self.player.set_fullscreen(False)
-                    except Exception as vlc_error:
-                        print(f"Error al cambiar modo VLC: {vlc_error}")
-                    # Restaurar el layout normal
-                    self.centralWidget().layout().setContentsMargins(11, 11, 11, 11)
-                    self.video_widget.setFocus()
-                
-                # Restaurar visibilidad del panel lateral
-                self.is_fullscreen_mode = False
-                self.sidebar_visible = True
-                self.sidebar.show()
-            else:
-                # Entrar en modo pantalla completa
-                # Primero cambiar banderas de ventana
-                self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
-                self.showFullScreen()
-                
-                if self.player:
-                    try:
-                        self.player.set_fullscreen(True)
-                    except Exception as vlc_error:
-                        print(f"Error al cambiar modo VLC: {vlc_error}")
-                    # Eliminar márgenes en pantalla completa
-                    self.centralWidget().layout().setContentsMargins(0, 0, 0, 0)
-                    self.video_widget.setFocus()
-                
-                # Ocultar panel lateral en pantalla completa
-                self.is_fullscreen_mode = True
-                self.sidebar_visible = False
+        """Alterna entre modo pantalla completa y ventana normal"""
+        print(f"toggle_fullscreen llamado. is_fullscreen_mode={self.is_fullscreen_mode}, isFullScreen()={self.isFullScreen()}")
+        if not self.isFullScreen():
+            self.normal_geometry = self.geometry()
+            if hasattr(self, 'sidebar'):
                 self.sidebar.hide()
-        except Exception as e:
-            print(f"Error al cambiar modo de pantalla: {e}")
-            # Intentar restaurar a un estado conocido
-            try:
-                self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.FramelessWindowHint)
-                self.showNormal()
-                self.centralWidget().layout().setContentsMargins(11, 11, 11, 11)
-                self.is_fullscreen_mode = False
-                self.sidebar_visible = True
+                self.sidebar_visible = False
+            self.showFullScreen()
+            self.is_fullscreen_mode = True
+            print("Entrando a pantalla completa")
+            if hasattr(self, 'video_widget'):
+                self.video_widget.setFocus()
+        else:
+            self.showNormal()
+            if hasattr(self, 'normal_geometry'):
+                self.setGeometry(self.normal_geometry)
+            self.is_fullscreen_mode = False
+            print("Saliendo de pantalla completa")
+            if hasattr(self, 'sidebar'):
                 self.sidebar.show()
-            except Exception as restore_error:
-                print(f"Error al restaurar ventana: {restore_error}")
-                # Último recurso
-                self.close()
-                QMessageBox.critical(None, "Error Crítico", 
-                                   "La aplicación encontró un error grave al cambiar el modo de pantalla y necesita reiniciarse.")
+                self.sidebar_visible = True
 
     def eventFilter(self, obj, event):
         try:
+            from PyQt6.QtCore import Qt as QtCoreQt, QEvent
+            # Mantener overlay del tamaño del video_widget
+            if obj == self.video_widget and event.type() == QEvent.Type.Resize:
+                self.overlay_widget.resize(self.video_widget.size())
+                self.update_menu_button_position()
+            if obj == self.overlay_widget and event.type() == QEvent.Type.Resize:
+                self.update_menu_button_position()
+            # Captura global de clic derecho
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == QtCoreQt.MouseButton.RightButton:
+                    # Verifica si el cursor está sobre el área de video
+                    global_pos = event.globalPosition().toPoint() if hasattr(event, 'globalPosition') else event.globalPos()
+                    video_rect = self.video_widget.geometry()
+                    video_top_left = self.video_widget.mapToGlobal(video_rect.topLeft())
+                    video_bottom_right = self.video_widget.mapToGlobal(video_rect.bottomRight())
+                    x, y = global_pos.x(), global_pos.y()
+                    if (video_top_left.x() <= x <= video_bottom_right.x() and
+                        video_top_left.y() <= y <= video_bottom_right.y()):
+                        # Mostrar menú contextual en la posición relativa al widget de video
+                        rel_pos = self.video_widget.mapFromGlobal(global_pos)
+                        self.show_video_context_menu(rel_pos)
+                        return True
+            if obj == self.overlay_widget and event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == QtCoreQt.MouseButton.RightButton:
+                    self.show_video_context_menu(event.pos())
+                    return True
+            # El evento ya es un QKeyEvent, no necesitamos convertirlo
             if event.type() == QEvent.Type.KeyPress:
-                # El evento ya es un QKeyEvent, no necesitamos convertirlo
                 if event.key() == Qt.Key.Key_F11 or \
                    (event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.AltModifier):
                     self.toggle_fullscreen()
@@ -342,6 +418,9 @@ class TVIPPlayer(QMainWindow):
         progress.setValue(0)
         progress.show()
         
+        # Variable para rastrear si la operación fue cancelada
+        was_cancelled = False
+        
         try:
             # Configurar una función de actualización para el progreso
             completed_count = 0
@@ -351,12 +430,18 @@ class TVIPPlayer(QMainWindow):
             
             async def wrapped_check_channel(channel):
                 nonlocal completed_count
-                await original_check_channel(channel)
-                completed_count += 1
-                progress.setValue(completed_count)
-                # Procesar eventos para mantener la UI responsiva
-                QApplication.processEvents()
-                
+                try:
+                    await original_check_channel(channel)
+                finally:
+                    completed_count += 1
+                    progress.setValue(completed_count)
+                    # Procesar eventos para mantener la UI responsiva
+                    QApplication.processEvents()
+                    
+                    # Verificar si el usuario canceló la operación
+                    if progress.wasCanceled():
+                        raise asyncio.CancelledError("Usuario canceló la operación")
+            
             # Reemplazar temporalmente el método
             self.playlist_manager.check_channel = wrapped_check_channel
             
@@ -366,31 +451,39 @@ class TVIPPlayer(QMainWindow):
             finally:
                 # Restaurar el método original
                 self.playlist_manager.check_channel = original_check_channel
-            
+        
         except asyncio.CancelledError:
+            was_cancelled = True
             print("Verificación de canales cancelada por el usuario")
-            QMessageBox.information(self, 'Operación Cancelada', 'La verificación de canales fue cancelada')
         except Exception as e:
-            print(f"Error durante la verificación de canales: {e}")
+            print(f"Error al ejecutar verificación de canales: {str(e)}")
             QMessageBox.warning(self, 'Error de Verificación', 
-                              f'Ocurrió un error durante la verificación de canales: {str(e)}')
+                              f'Ocurrió un error durante la verificación de canales:\n{str(e)}')
         finally:
             progress.setValue(len(self.playlist_manager.channels))
             progress.close()
-            self.update_channel_list(self.group_filter.currentText())
             
-            # Mostrar resumen de verificación
-            online_count = sum(1 for ch in self.playlist_manager.channels if ch.status == 'online')
-            slow_count = sum(1 for ch in self.playlist_manager.channels if ch.status == 'slow')
-            offline_count = sum(1 for ch in self.playlist_manager.channels if ch.status == 'offline')
-            
-            QMessageBox.information(self, 'Verificación Completada', 
-                                  f'Resumen de verificación:\n'
-                                  f'- Canales en línea: {online_count}\n'
-                                  f'- Canales lentos: {slow_count}\n'
-                                  f'- Canales fuera de línea: {offline_count}\n'
-                                  f'- Total verificado: {len(self.playlist_manager.channels)}')
-    
+            # Actualizar la lista solo si no fue cancelada
+            if not was_cancelled:
+                self.update_channel_list(self.group_filter.currentText())
+                
+                # Mostrar resumen de verificación
+                online_count = sum(1 for ch in self.playlist_manager.channels if ch.status == 'online')
+                slow_count = sum(1 for ch in self.playlist_manager.channels if ch.status == 'slow')
+                offline_count = sum(1 for ch in self.playlist_manager.channels if ch.status == 'offline')
+                
+                if was_cancelled:
+                    message = "La verificación fue cancelada.\n\nResultados parciales:"
+                else:
+                    message = "Verificación completada.\n\nResultados:"
+                
+                QMessageBox.information(self, 'Verificación de Canales', 
+                                      f'{message}\n'
+                                      f'- Canales en línea: {online_count}\n'
+                                      f'- Canales lentos: {slow_count}\n'
+                                      f'- Canales fuera de línea: {offline_count}\n'
+                                      f'- Total verificado: {completed_count}')
+
     def check_channels(self):
         try:
             # Configurar una política de manejo de eventos para evitar errores de conexión
@@ -467,194 +560,235 @@ class TVIPPlayer(QMainWindow):
             
         cursor_pos = QCursor.pos()
         window_pos = self.mapToGlobal(QPoint(0, 0))
+        window_width = self.width()
         relative_x = cursor_pos.x() - window_pos.x()
         
-        if relative_x <= self.sidebar_hover_margin and not self.sidebar_visible:
-            # El cursor está cerca del borde izquierdo, mostrar el panel
+        # Verificar si el cursor está cerca del borde derecho
+        if relative_x >= (window_width - self.sidebar_hover_margin) and not self.sidebar_visible:
+            # El cursor está cerca del borde derecho, mostrar el panel
             self.sidebar.show()
             self.sidebar_visible = True
-        elif relative_x > self.sidebar.width() + 10 and self.sidebar_visible:
-            # El cursor está lejos del panel, ocultarlo
-            self.sidebar.hide()
-            self.sidebar_visible = False
+            self.sidebar_position = "right"
+        # Verificar si el cursor está lejos del panel cuando está visible
+        elif self.sidebar_visible and self.sidebar_position == "right":
+            # Si está a la derecha, verificar si el cursor está lejos del borde derecho
+            if relative_x < (window_width - self.sidebar.width() - 10):
+                self.sidebar.hide()
+                self.sidebar_visible = False
 
     def show_video_context_menu(self, position):
-        """Muestra un menú contextual para el widget de video"""
-        # Solo mostrar el menú si hay un medio cargado
-        if not self.player.get_media():
-            return
-            
-        # Crear el menú contextual
+        print("MENÚ CONTEXTUAL INVOCADO", position)
         context_menu = QMenu(self)
+        # Acción de pantalla completa
+        fullscreen_action = QAction('Pantalla Completa', self)
+        fullscreen_action.triggered.connect(self.toggle_fullscreen)
+        context_menu.addAction(fullscreen_action)
         
-        # Añadir opción para pistas de audio
-        audio_menu = QMenu("Pistas de Audio", self)
-        context_menu.addMenu(audio_menu)
+        # Opciones de cambio de tamaño de video
+        scale_menu = QMenu('Escala de Video', self)
+        scales = {
+            'Ajuste Original (1.0x)': 1.0,
+            'Ajuste a Ventana (0.5x)': 0.5,
+            'Ajuste Doble (2.0x)': 2.0
+        }
+        for name, scale in scales.items():
+            action = QAction(name, self)
+            action.setCheckable(True)
+            action.setChecked(self.current_scale == scale)
+            def create_scale_handler(s):
+                return lambda: self.set_scale_mode(s)
+            action.triggered.connect(create_scale_handler(scale))
+            scale_menu.addAction(action)
+        context_menu.addMenu(scale_menu)
         
-        try:
-            # Obtener el número de pistas de audio disponibles
-            audio_tracks_count = self.player.audio_get_track_count()
-            current_track = self.player.audio_get_track()
-            
-            print(f"Pistas de audio disponibles: {audio_tracks_count}, pista actual: {current_track}")
-            
-            if audio_tracks_count > 0:
-                # Añadir cada pista de audio al menú
-                for i in range(audio_tracks_count):
-                    try:
-                        track_id = self.player.audio_get_track_id(i)
-                        track_description = self.player.audio_get_track_description(i)
-                        
-                        # Extraer solo la descripción de la pista (puede variar según la versión de VLC)
-                        track_name = f"Pista {i+1}"
-                        if track_description:
-                            if isinstance(track_description, tuple) and len(track_description) > 1:
-                                # En algunas versiones de VLC, la descripción es una tupla (id, nombre)
-                                track_name = track_description[1].decode('utf-8', errors='ignore')
-                            elif isinstance(track_description, bytes):
-                                # En otras versiones puede ser directamente bytes
-                                track_name = track_description.decode('utf-8', errors='ignore')
-                            elif isinstance(track_description, str):
-                                # O directamente un string
-                                track_name = track_description
-                        
-                        print(f"Pista {i}: ID={track_id}, Nombre={track_name}")
-                        
-                        action = QAction(track_name, self)
-                        action.setCheckable(True)
-                        action.setChecked(track_id == current_track)
-                        
-                        # Usar una función de fábrica para capturar correctamente el valor de track_id
-                        def create_track_handler(tid):
-                            return lambda checked: self.change_audio_track(tid)
-                            
-                        action.triggered.connect(create_track_handler(track_id))
-                        audio_menu.addAction(action)
-                    except Exception as track_error:
-                        print(f"Error al procesar pista {i}: {track_error}")
-            else:
-                # Si no hay pistas de audio disponibles
-                no_tracks_action = QAction("No hay pistas disponibles", self)
-                no_tracks_action.setEnabled(False)
-                audio_menu.addAction(no_tracks_action)
-                
-            # Añadir opción para refrescar las pistas de audio
-            audio_menu.addSeparator()
-            refresh_action = QAction("Refrescar pistas de audio", self)
-            refresh_action.triggered.connect(lambda: self.refresh_audio_tracks())
-            audio_menu.addAction(refresh_action)
-            
-        except Exception as e:
-            print(f"Error al obtener pistas de audio: {e}")
-            error_action = QAction(f"Error: {str(e)}", self)
-            error_action.setEnabled(False)
-            audio_menu.addAction(error_action)
+        # Opciones de relación de aspecto
+        aspect_menu = QMenu('Relación de Aspecto', self)
+        aspect_ratios = {
+            'Auto': '',
+            '16:9': '16:9',
+            '4:3': '4:3',
+            '1:1': '1:1',
+            '16:10': '16:10',
+            '2.35:1 (Cinemascope)': '2.35:1',
+            '2.21:1 (Panavision)': '221:100',
+            '1.85:1 (Cine)': '185:100',
+            '5:4': '5:4',
+            '5:3': '5:3',
+            '3:2': '3:2'
+        }
+        for name, ratio in aspect_ratios.items():
+            action = QAction(name, self)
+            action.setCheckable(True)
+            action.setChecked(self.current_aspect_ratio == ratio)
+            def create_ratio_handler(r):
+                return lambda: self.set_aspect_ratio(r)
+            action.triggered.connect(create_ratio_handler(ratio))
+            aspect_menu.addAction(action)
+        context_menu.addMenu(aspect_menu)
+
+        # Opciones de pistas de audio (usando audio_get_track_description)
+        if self.player and self.player.get_media():
+            desc_list = self.player.audio_get_track_description()
+            if desc_list and len(desc_list) > 1:
+                audio_menu = QMenu('Pistas de Audio', self)
+                current_track = self.player.audio_get_track()
+                for desc in desc_list:
+                    track_id, name = desc
+                    if isinstance(name, bytes):
+                        track_name = name.decode('utf-8', errors='ignore')
+                    elif isinstance(name, str):
+                        track_name = name
+                    else:
+                        track_name = f"Pista {track_id}"
+                    action = QAction(track_name, self)
+                    action.setCheckable(True)
+                    action.setChecked(track_id == current_track)
+                    def create_track_handler(tid):
+                        return lambda: self.change_audio_track(tid)
+                    action.triggered.connect(create_track_handler(track_id))
+                    audio_menu.addAction(action)
+                context_menu.addMenu(audio_menu)
         
-        # Mostrar el menú en la posición del cursor
-        context_menu.exec(self.video_widget.mapToGlobal(position))
-    
-    def refresh_audio_tracks(self):
-        """Refresca la información de pistas de audio disponibles"""
+        # Mostrar el menú en la posición global del cursor
+        global_pos = self.video_widget.mapToGlobal(position)
+        context_menu.exec(global_pos)
+
+    def set_scale_mode(self, scale):
         try:
-            if not self.player.get_media():
-                QMessageBox.information(self, "Información", 
-                                      "No hay medio cargado para refrescar las pistas de audio.")
-                return
-                
-            # Forzar a VLC a recargar las pistas de audio
-            current_time = self.player.get_time()
-            was_playing = self.player.is_playing()
-            
-            # Pausar si está reproduciendo
-            if was_playing:
-                self.player.pause()
-            
-            # Esperar un momento para que VLC actualice la información
-            QTimer.singleShot(500, lambda: self.complete_refresh(current_time, was_playing))
-            
-            print("Refrescando pistas de audio...")
+            scale = float(scale)
+            self.player.video_set_scale(scale)
+            self.current_scale = scale
+            print(f"Escala de video cambiada a: {scale}")
         except Exception as e:
-            print(f"Error al refrescar pistas de audio: {e}")
-            QMessageBox.warning(self, "Error", 
-                              f"No se pudieron refrescar las pistas de audio: {str(e)}")
-    
-    def complete_refresh(self, time_pos, was_playing):
-        """Completa el proceso de refrescar las pistas de audio"""
-        try:
-            # Restaurar posición de tiempo
-            self.player.set_time(time_pos)
-            
-            # Continuar reproducción si estaba reproduciendo
-            if was_playing:
-                self.player.play()
-            
-            # Mostrar información de pistas disponibles
-            audio_tracks_count = self.player.audio_get_track_count()
-            current_track = self.player.audio_get_track()
-            
-            tracks_info = f"Pistas de audio disponibles: {audio_tracks_count}\n"
-            tracks_info += f"Pista actual: {current_track}\n\n"
-            
-            if audio_tracks_count > 0:
-                tracks_info += "Pistas disponibles:\n"
-                for i in range(audio_tracks_count):
-                    try:
-                        track_id = self.player.audio_get_track_id(i)
-                        track_description = self.player.audio_get_track_description(i)
-                        
-                        track_name = f"Pista {i+1}"
-                        if track_description:
-                            if isinstance(track_description, tuple) and len(track_description) > 1:
-                                track_name = track_description[1].decode('utf-8', errors='ignore')
-                            elif isinstance(track_description, bytes):
-                                track_name = track_description.decode('utf-8', errors='ignore')
-                            elif isinstance(track_description, str):
-                                track_name = track_description
-                        
-                        tracks_info += f"- {track_name} (ID: {track_id})\n"
-                    except Exception as e:
-                        tracks_info += f"- Error en pista {i}: {str(e)}\n"
-            
-            print(tracks_info)
-            QMessageBox.information(self, "Pistas de Audio", tracks_info)
-        except Exception as e:
-            print(f"Error al completar el refresco de pistas: {e}")
+            print(f"Error al cambiar la escala del video: {e}")
     
     def change_audio_track(self, track_id):
-        """Cambia la pista de audio actual"""
         try:
-            # Verificar que el reproductor esté activo y tenga un medio cargado
             if not self.player.get_media():
                 print("No hay medio cargado para cambiar la pista de audio")
                 return False
-                
-            # Intentar cambiar la pista de audio
             result = self.player.audio_set_track(track_id)
-            
             if result:
                 print(f"Pista de audio cambiada a ID: {track_id}")
-                # Mostrar un mensaje temporal en la interfaz
-                current_track_index = -1
-                for i in range(self.player.audio_get_track_count()):
-                    if self.player.audio_get_track_id(i) == track_id:
-                        current_track_index = i
-                        break
-                        
-                if current_track_index >= 0:
-                    track_description = self.player.audio_get_track_description(current_track_index)
-                    track_name = f"Pista {current_track_index+1}"
-                    if track_description and isinstance(track_description, tuple) and len(track_description) > 1:
-                        track_name = track_description[1].decode('utf-8', errors='ignore')
-                    
-                    QMessageBox.information(self, "Cambio de Audio", 
-                                         f"Pista de audio cambiada a: {track_name}", 
-                                         QMessageBox.StandardButton.Ok)
                 return True
             else:
                 print(f"Error al cambiar la pista de audio a ID: {track_id}")
                 return False
         except Exception as e:
             print(f"Excepción al cambiar pista de audio: {e}")
+            return False
+
+    def process_and_filter_channels_background(self):
+        from PyQt6.QtWidgets import QFileDialog
+        file_name, _ = QFileDialog.getOpenFileName(self, 'Selecciona una lista M3U para procesar', '', 'M3U Files (*.m3u *.m3u8)')
+        if file_name:
+            import threading
+            thread = threading.Thread(target=self.process_and_filter_channels, args=(file_name,), daemon=True)
+            thread.start()
+
+    def process_and_filter_channels(self, file_path):
+        # Procesar la lista seleccionada (no la actual), sin afectar la UI
+        import asyncio
+        import tempfile
+        from datetime import datetime
+        from playlist_manager import PlaylistManager
+        # 1. Cargar la lista seleccionada en un PlaylistManager separado
+        pm = PlaylistManager()
+        try:
+            pm.load_playlist(file_path)
+        except Exception as e:
+            print(f"Error al cargar la lista seleccionada: {e}")
+            return
+        # 2. Completar metadatos ya lo hace load_playlist
+        # 3. Verificar canales (asyncio, en este hilo)
+        loop = None
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(pm.check_all_channels())
+        except Exception as e:
+            print(f"Error en verificación de canales: {e}")
+        finally:
+            if loop:
+                loop.close()
+        # 4. Guardar solo los funcionales
+        working_channels = [ch for ch in pm.channels if ch.status in ['online', 'slow']]
+        if working_channels:
+            temp_dir = tempfile.gettempdir()
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            temp_file = os.path.join(temp_dir, f"canales_funcionales_{timestamp}.m3u")
+            pm.save_m3u_playlist(temp_file, working_channels)
+            print(f"Lista funcional generada: {temp_file}")
+        else:
+            print("No hay canales funcionales tras el filtrado.")
+
+    def update_menu_button_position(self):
+        # Calcula la posición global del área de video y coloca el botón flotante
+        video_rect = self.video_widget.geometry()
+        video_top_left = self.video_widget.mapTo(self, video_rect.topLeft())
+        
+        # Colocar el botón en la esquina izquierda superior
+        x = video_top_left.x() + 4
+        y = video_top_left.y() + 4
+        self.menu_button.move(x, y)
+
+    def keyPressEvent(self, event):
+        print(f"keyPressEvent: key={event.key()} esc={Qt.Key.Key_Escape} fullscreen={self.isFullScreen()} is_fullscreen_mode={self.is_fullscreen_mode}")
+        # Asegura que los atajos funcionen incluso si el foco está en el botón flotante
+        if event.key() == Qt.Key.Key_F11 or \
+           (event.key() == Qt.Key.Key_Return and event.modifiers() == Qt.KeyboardModifier.AltModifier):
+            self.toggle_fullscreen()
+        elif event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            print("ESC detectado, intentando salir de pantalla completa")
+            self.toggle_fullscreen()
+        else:
+            super().keyPressEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_menu_button_position()
+        if hasattr(self, 'overlay_widget'):
+            self.overlay_widget.resize(self.video_widget.size())
+
+    def _check_fullscreen_after_play(self):
+        """Verifica y corrige el estado de pantalla completa después de iniciar la reproducción"""
+        if self.isFullScreen():
+            print("Detectado cambio a pantalla completa después de reproducir, forzando salida")
+            self.showNormal()
+            if hasattr(self, 'normal_geometry'):
+                self.setGeometry(self.normal_geometry)
+            self.is_fullscreen_mode = False
+            print("Forzado a modo ventana completado")
+            
+            # Programar otra verificación para asegurar que no vuelva a pantalla completa
+            QTimer.singleShot(500, self._check_fullscreen_after_play)
+
+    def _force_window_mode(self):
+        """Método auxiliar para forzar el modo ventana"""
+        print("Ejecutando _force_window_mode")
+        if self.isFullScreen():
+            self.showNormal()
+            if hasattr(self, 'normal_geometry'):
+                self.setGeometry(self.normal_geometry)
+            self.is_fullscreen_mode = False
+            if hasattr(self, 'sidebar'):
+                self.sidebar.show()
+            print("Forzado a modo ventana completado")
+
+    def set_aspect_ratio(self, aspect_ratio):
+        """Cambia la relación de aspecto del video"""
+        try:
+            if not self.player.get_media():
+                print("No hay medio cargado para cambiar la relación de aspecto")
+                return False
+            
+            # Establecer la relación de aspecto
+            self.player.video_set_aspect_ratio(aspect_ratio)
+            self.current_aspect_ratio = aspect_ratio
+            print(f"Relación de aspecto cambiada a: {aspect_ratio}")
+            return True
+        except Exception as e:
+            print(f"Error al cambiar la relación de aspecto: {e}")
             return False
 
 if __name__ == '__main__':
