@@ -28,6 +28,13 @@ class MainWindow(QMainWindow):
         self.is_fullscreen_mode = False
         self.sidebar_hover_margin = 20
         self.sidebar_position = "right"  # Posición del sidebar (right o left)
+        self.cursor_crossed_right_edge = False  # Nueva variable para detectar cruce
+        
+        # Temporizador para ocultar el sidebar después de un tiempo sin usarse
+        self.sidebar_hide_timer = QTimer(self)
+        self.sidebar_hide_timer.setSingleShot(True)  # Una sola ejecución
+        self.sidebar_hide_timer.timeout.connect(self.hide_sidebar_timeout)
+        self.sidebar_hide_delay = 5000  # 5 segundos
         
         # Inicializar componentes principales
         self.media_player = MediaPlayer()
@@ -173,22 +180,50 @@ class MainWindow(QMainWindow):
         window_width = self.width()
         relative_x = cursor_pos.x() - window_pos.x()
         
+        # Verificar si el cursor está dentro de los límites de la ventana
+        is_cursor_in_window = (0 <= relative_x <= window_width) and (0 <= cursor_pos.y() - window_pos.y() <= self.height())
+        
         # Verificar si el cursor está cerca del borde derecho
-        if relative_x >= (window_width - self.sidebar_hover_margin) and not self.sidebar_visible:
-            # El cursor está cerca del borde derecho, mostrar el panel
+        cursor_at_right_edge = relative_x >= (window_width - self.sidebar_hover_margin) and is_cursor_in_window
+        
+        # Detectar cuando el cursor cruza el borde derecho
+        if cursor_at_right_edge and not self.cursor_crossed_right_edge:
+            # El cursor acaba de cruzar el borde derecho, mostrar el panel
             self.sidebar.show()
             self.sidebar_visible = True
             self.sidebar_position = "right"
-        # Verificar si el cursor está lejos del panel cuando está visible
-        elif self.sidebar_visible and self.sidebar_position == "right":
-            # Si está a la derecha, verificar si el cursor está lejos del borde derecho
-            if relative_x < (window_width - self.sidebar.width() - 10):
-                self.sidebar.hide()
-                self.sidebar_visible = False
+            self.cursor_crossed_right_edge = True
+            
+            # Iniciar el temporizador para ocultar automáticamente
+            self.sidebar_hide_timer.start(self.sidebar_hide_delay)
+        
+        # Restablecer el estado de cruce cuando el cursor ya no está en el borde
+        elif not cursor_at_right_edge:
+            self.cursor_crossed_right_edge = False
+        
+        # Reiniciar el temporizador si el usuario interactúa con el sidebar
+        if self.sidebar_visible and is_cursor_in_window:
+            sidebar_rect = self.sidebar.geometry()
+            if sidebar_rect.contains(self.mapFromGlobal(cursor_pos)):
+                # Reiniciar el temporizador cuando el cursor está sobre el sidebar
+                self.sidebar_hide_timer.start(self.sidebar_hide_delay)
+    
+    def hide_sidebar_timeout(self):
+        """Oculta el sidebar después de que expire el temporizador"""
+        if self.is_fullscreen_mode and self.sidebar_visible:
+            print("Auto-ocultando sidebar después de 5 segundos de inactividad")
+            self.sidebar.hide()
+            self.sidebar_visible = False
     
     def eventFilter(self, obj, event):
         """Filtro de eventos para manejar teclas y otros eventos globales"""
         try:
+            # Reiniciar el temporizador si hay actividad del mouse en pantalla completa
+            if self.is_fullscreen_mode and self.sidebar_visible:
+                if event.type() in [QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress]:
+                    # Reiniciar el temporizador de ocultación
+                    self.sidebar_hide_timer.start(self.sidebar_hide_delay)
+            
             # Manejar eventos de teclado
             if event.type() == QEvent.Type.KeyPress:
                 if event.key() == Qt.Key.Key_F11 or \
@@ -198,10 +233,6 @@ class MainWindow(QMainWindow):
                 elif event.key() == Qt.Key.Key_Escape and self.isFullScreen():
                     self.toggle_fullscreen()
                     return True
-            
-            # Intentar detectar clic derecho en el widget de video o su overlay
-            # Si el objeto es el widget de video o su overlay, no necesitamos hacer nada 
-            # ya que lo manejarán sus propios filtros de eventos
             
             return super().eventFilter(obj, event)
         except Exception as e:
