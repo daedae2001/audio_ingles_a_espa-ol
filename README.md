@@ -59,6 +59,26 @@ Implementa la interfaz gráfica de usuario:
 #### `src/utils/`
 Utilidades y funciones auxiliares para toda la aplicación.
 
+## Interfaz Visual (Textual UI)
+
+A partir de la rama `feature/flex-ui` la aplicación utiliza [Textual](https://www.textualize.io/) para una interfaz TUI moderna y flexible.
+
+- Interfaz completamente en terminal, con soporte para mouse, teclado, layouts flexibles y widgets avanzados.
+- El código de la interfaz principal está en `src/ui/textual_app.py`.
+
+### Ejecución en esta rama:
+
+1. Instala las dependencias:
+   ```
+   pip install textual rich
+   ```
+2. Ejecuta la aplicación:
+   ```
+   python main.py
+   ```
+
+Próximos pasos: migrar la lógica de reproducción y gestión de listas a widgets Textual.
+
 ## Funcionalidades Detalladas
 
 ### Reproducción de Contenido
