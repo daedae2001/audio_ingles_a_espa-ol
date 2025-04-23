@@ -219,7 +219,7 @@ class TVIPPlayer(QMainWindow):
         buttons_grid.setSpacing(10)
         
         # Primera fila de botones
-        load_button = QPushButton('Cargar Lista M3U')
+        load_button = QPushButton('Cargar Lista')
         load_button.clicked.connect(self.load_playlist)
         load_button.setStyleSheet(ModernStyle.BUTTON_STYLE)
         load_button.setMinimumWidth(140)
@@ -238,13 +238,22 @@ class TVIPPlayer(QMainWindow):
         check_button.setStyleSheet(ModernStyle.BUTTON_STYLE)
         check_button.setMinimumWidth(140)
         
-        save_working_button = QPushButton('Guardar Canales Funcionales')
+        save_working_button = QPushButton('Guardar Funcionando')
         save_working_button.clicked.connect(self.save_working_channels)
         save_working_button.setStyleSheet(ModernStyle.BUTTON_STYLE)
         save_working_button.setMinimumWidth(140)
         
         buttons_grid.addWidget(check_button, 1, 0)
         buttons_grid.addWidget(save_working_button, 1, 1)
+        
+        # Tercera fila de botones (nueva)
+        unify_button = QPushButton('Unificar Canales')
+        unify_button.clicked.connect(self.unify_channels)
+        unify_button.setStyleSheet(ModernStyle.BUTTON_STYLE)
+        unify_button.setMinimumWidth(140)
+        unify_button.setToolTip('Elimina canales duplicados y unifica nombres similares')
+        
+        buttons_grid.addWidget(unify_button, 2, 0, 1, 2)  # Ocupa dos columnas
         
         sidebar_layout.addLayout(buttons_grid)
         
@@ -565,6 +574,55 @@ class TVIPPlayer(QMainWindow):
         QMessageBox.information(self, 'Descargar Lista', 
                               'Esta función se ha simplificado en esta versión estética.\nUtilice la versión completa para descargar listas.')
     
+    def unify_channels(self):
+        """Elimina canales duplicados por URL y unifica nombres similares"""
+        if not self.playlist_manager.channels:
+            QMessageBox.warning(self, "Sin canales", "No hay canales para unificar.")
+            return
+            
+        # Mostrar diálogo de progreso
+        progress = QProgressDialog("Unificando canales...", "Cancelar", 0, 100, self)
+        progress.setWindowTitle("Unificando canales")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(10)
+        
+        # Obtener conteo inicial
+        initial_count = len(self.playlist_manager.channels)
+        
+        # Unificar canales
+        self.playlist_manager.remove_duplicate_channels()
+        
+        # Actualizar progreso
+        progress.setValue(80)
+        
+        # Obtener conteo final
+        final_count = len(self.playlist_manager.channels)
+        removed_count = initial_count - final_count
+        
+        # Guardar la lista actualizada
+        self.playlist_manager.save_last_playlist()
+        
+        # Actualizar la interfaz
+        self.group_filter.clear()
+        self.group_filter.addItem("Todos los grupos")
+        self.group_filter.addItems(sorted(self.playlist_manager.groups))
+        self.update_channel_list('Todos los grupos')
+        
+        # Actualizar etiqueta de estado
+        self.status_label.setText(f"Lista unificada: {len(self.playlist_manager.channels)} canales")
+        
+        # Completar progreso
+        progress.setValue(100)
+        
+        # Mostrar mensaje de éxito
+        QMessageBox.information(
+            self, 
+            "Canales unificados", 
+            f"Se han eliminado {removed_count} canales duplicados.\n"
+            f"La lista ahora contiene {final_count} canales únicos ordenados por nombre."
+        )
+        
     def show_video_context_menu(self, position):
         context_menu = QMenu(self)
         context_menu.setStyleSheet(ModernStyle.MENU_STYLE)

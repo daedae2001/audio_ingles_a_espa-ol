@@ -443,3 +443,192 @@ class PlaylistManager:
     def download_playlist_from_url_sync(self, url: str) -> Tuple[bool, str, str]:
         """Versión sincrónica del método download_playlist_from_url."""
         return asyncio.run(self.download_playlist_from_url(url))
+        
+    def remove_duplicate_channels(self) -> None:
+        """
+        Elimina canales duplicados basados en la URL y unifica nombres similares.
+        
+        Esta función:
+        1. Elimina canales duplicados por URL, combinando sus atributos
+        2. Unifica nombres similares de canales (ej. "Canal HD", "Canal FHD", etc.)
+        3. Ordena los canales por nombre
+        """
+        if not self.channels:
+            return
+            
+        # Diccionario para agrupar canales por URL
+        channels_by_url = {}
+        
+        # Patrones comunes para normalizar nombres
+        name_patterns = {
+            r'(?i)\s*(HD|SD|FHD|UHD|4K|FULL HD)': '',  # Eliminar indicadores de calidad
+            r'(?i)\s*\(\d+\)': '',  # Eliminar números entre paréntesis
+            r'(?i)\s*\[\d+\]': '',  # Eliminar números entre corchetes
+            r'(?i)\s*\+\d+': '',    # Eliminar +1, +2, etc.
+            r'(?i)\s*\d+p': '',     # Eliminar resoluciones como 720p, 1080p
+            r'(?i)\s*TV\b': '',     # Eliminar "TV" al final
+            r'(?i)\s*TELEVISION\b': '', # Eliminar "TELEVISION"
+            r'(?i)^EL\s+': '',      # Eliminar "EL" al principio
+            r'(?i)^LA\s+': '',      # Eliminar "LA" al principio
+            r'(?i)^LOS\s+': '',     # Eliminar "LOS" al principio
+            r'(?i)^LAS\s+': '',     # Eliminar "LAS" al principio
+        }
+        
+        # Primera pasada: agrupar por URL y normalizar nombres
+        normalized_names_map = {}  # Mapeo de nombre normalizado a lista de canales
+        
+        for channel in self.channels:
+            if not channel.url:
+                continue
+                
+            # Normalizar el nombre
+            normalized_name = channel.name
+            for pattern, replacement in name_patterns.items():
+                normalized_name = re.sub(pattern, replacement, normalized_name)
+            normalized_name = normalized_name.strip().lower()
+            
+            # Agrupar por URL
+            if channel.url in channels_by_url:
+                channels_by_url[channel.url].append((channel, normalized_name))
+            else:
+                channels_by_url[channel.url] = [(channel, normalized_name)]
+                
+            # Agrupar por nombre normalizado
+            if normalized_name:
+                if normalized_name in normalized_names_map:
+                    normalized_names_map[normalized_name].append(channel)
+                else:
+                    normalized_names_map[normalized_name] = [channel]
+        
+        # Segunda pasada: unificar canales duplicados por URL
+        unified_channels = []
+        for url, channel_list in channels_by_url.items():
+            if len(channel_list) == 1:
+                # No hay duplicados para esta URL
+                unified_channels.append(channel_list[0][0])
+            else:
+                # Combinar atributos de canales duplicados
+                combined_channel = self._combine_duplicate_channels(channel_list)
+                unified_channels.append(combined_channel)
+        
+        # Tercera pasada: unificar nombres muy similares (incluso con URLs diferentes)
+        # Primero, agrupar por raíz del nombre
+        name_roots = {}
+        for channel in unified_channels:
+            # Normalizar y simplificar aún más el nombre
+            simple_name = channel.name.lower()
+            for pattern, replacement in name_patterns.items():
+                simple_name = re.sub(pattern, replacement, simple_name)
+            
+            # Eliminar caracteres no alfanuméricos y espacios múltiples
+            simple_name = re.sub(r'[^\w\s]', '', simple_name)
+            simple_name = re.sub(r'\s+', ' ', simple_name).strip()
+            
+            # Obtener la raíz del nombre (primeras palabras significativas)
+            name_parts = simple_name.split()
+            if len(name_parts) > 0:
+                # Usar las primeras 2 palabras como máximo como raíz del nombre
+                root = ' '.join(name_parts[:min(2, len(name_parts))])
+                
+                if len(root) >= 3:  # Solo considerar raíces con al menos 3 caracteres
+                    if root in name_roots:
+                        name_roots[root].append(channel)
+                    else:
+                        name_roots[root] = [channel]
+        
+        # Unificar nombres de canales con la misma raíz
+        for root, channels in name_roots.items():
+            if len(channels) > 1:
+                # Obtener el mejor nombre para este grupo
+                all_names = [ch.name for ch in channels]
+                best_name = self._get_best_channel_name(all_names)
+                
+                # Asignar el mejor nombre a todos los canales de este grupo
+                for channel in channels:
+                    channel.name = best_name
+        
+        # Ordenar canales por nombre
+        unified_channels.sort(key=lambda x: x.name.lower())
+        
+        # Actualizar la lista de canales
+        self.channels = unified_channels
+        
+        # Actualizar grupos
+        self.groups = sorted(list(set(ch.group for ch in self.channels if ch.group)))
+        if 'Sin Grupo' in self.groups:
+            # Asegurar que "Sin Grupo" esté al final
+            self.groups.remove('Sin Grupo')
+            self.groups.append('Sin Grupo')
+            
+        print(f"Canales unificados: {len(self.channels)} canales en {len(self.groups)} grupos")
+    
+    def _combine_duplicate_channels(self, channel_list):
+        """
+        Combina los atributos de canales duplicados en uno solo.
+        
+        Args:
+            channel_list: Lista de tuplas (canal, nombre_normalizado)
+            
+        Returns:
+            Channel: Canal combinado con los mejores atributos
+        """
+        # Ordenar por estado (online > slow > unknown > offline)
+        status_priority = {'online': 0, 'slow': 1, 'unknown': 2, 'offline': 3}
+        sorted_channels = sorted(channel_list, key=lambda x: status_priority.get(x[0].status, 4))
+        
+        # Usar el primer canal (mejor estado) como base
+        base_channel = sorted_channels[0][0]
+        
+        # Elegir el mejor nombre
+        all_names = [ch[0].name for ch in channel_list]
+        best_name = self._get_best_channel_name(all_names)
+        
+        # Combinar atributos
+        combined = Channel(
+            name=best_name,
+            url=base_channel.url,
+            group=base_channel.group,
+            logo=next((ch[0].logo for ch in sorted_channels if ch[0].logo), None),
+            status=base_channel.status,
+            response_time=base_channel.response_time,
+            last_check=base_channel.last_check
+        )
+        
+        return combined
+    
+    def _get_best_channel_name(self, names):
+        """
+        Elige el mejor nombre entre varias opciones para un canal.
+        
+        Args:
+            names: Lista de nombres de canal
+            
+        Returns:
+            str: El nombre más representativo
+        """
+        if not names:
+            return ""
+            
+        # Preferir nombres más largos que no sean excesivamente largos
+        filtered_names = [name for name in names if 3 < len(name) < 30]
+        if not filtered_names:
+            filtered_names = names
+            
+        # Preferir nombres sin caracteres especiales extraños
+        clean_names = [name for name in filtered_names 
+                      if not re.search(r'[^\w\s\-+&()[\]áéíóúÁÉÍÓÚñÑ]', name)]
+        if clean_names:
+            filtered_names = clean_names
+            
+        # Preferir nombres sin números al final
+        names_without_numbers = [name for name in filtered_names 
+                                if not re.search(r'\d+$', name)]
+        if names_without_numbers:
+            filtered_names = names_without_numbers
+            
+        # Si hay varios candidatos, elegir el más corto entre ellos
+        if filtered_names:
+            return min(filtered_names, key=len)
+        
+        # Si no hay candidatos después del filtrado, devolver el primero
+        return names[0]
