@@ -1,5 +1,12 @@
+#!/usr/bin/env python3
+"""
+TV-IP Player - Reproductor de canales IPTV con estilo moderno
+Versión mejorada estéticamente usando PyQt6
+"""
+
 import sys
 import os
+import traceback
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QListWidget, QLabel, QPushButton,
                              QComboBox, QFileDialog, QListWidgetItem, QSizePolicy,
@@ -18,6 +25,7 @@ class ModernStyle:
     TEXT_COLOR = "#FFFFFF"
     ACCENT_COLOR = "#FF8000"  # Naranja
     ACCENT_HOVER = "#FF9A2E"
+    STATUS_COLOR = "#FFCC00"  # Amarillo más visible para estados
     BUTTON_STYLE = f"""
         QPushButton {{
             background-color: {MEDIUM_BG};
@@ -33,6 +41,19 @@ class ModernStyle:
         }}
         QPushButton:pressed {{
             background-color: {ACCENT_HOVER};
+            color: {DARK_BG};
+        }}
+    """
+    LABEL_STYLE = f"""
+        QLabel {{
+            color: {TEXT_COLOR};
+            font-weight: bold;
+        }}
+    """
+    STATUS_LABEL_STYLE = f"""
+        QLabel {{
+            color: {STATUS_COLOR};
+            font-weight: bold;
         }}
     """
     LIST_STYLE = f"""
@@ -42,6 +63,7 @@ class ModernStyle:
             border: 1px solid {LIGHT_BG};
             border-radius: 4px;
             padding: 5px;
+            font-size: 12pt;
         }}
         QListWidget::item {{
             padding: 8px;
@@ -53,13 +75,6 @@ class ModernStyle:
         }}
         QListWidget::item:hover {{
             background-color: {LIGHT_BG};
-        }}
-    """
-    LABEL_STYLE = f"""
-        QLabel {{
-            color: {TEXT_COLOR};
-            font-weight: bold;
-            font-size: 14px;
         }}
     """
     COMBOBOX_STYLE = f"""
@@ -77,32 +92,11 @@ class ModernStyle:
             width: 25px;
             border-left: 1px solid {LIGHT_BG};
         }}
-        QComboBox::down-arrow {{
-            image: url(resources/down-arrow.png);
-            width: 12px;
-            height: 12px;
-        }}
         QComboBox QAbstractItemView {{
             background-color: {MEDIUM_BG};
             color: {TEXT_COLOR};
             selection-background-color: {ACCENT_COLOR};
             selection-color: {DARK_BG};
-        }}
-    """
-    MENU_BUTTON_STYLE = f"""
-        QPushButton {{
-            background-color: rgba(0, 0, 0, 0);
-            color: {ACCENT_COLOR};
-            border: 1px solid {ACCENT_COLOR};
-            border-radius: 12px;
-            padding: 0px;
-            min-width: 28px;
-            min-height: 28px;
-            font-weight: bold;
-            font-size: 16px;
-        }}
-        QPushButton:hover {{
-            background-color: rgba(255, 128, 0, 0.2);
         }}
     """
     MENU_STYLE = f"""
@@ -125,11 +119,76 @@ class ModernStyle:
             margin: 5px 2px;
         }}
     """
+    CHANNEL_NAME_COLOR = "#80FFFF"  # Cyan claro (complementario del naranja)
+    ONLINE_COLOR = "#80FF80"        # Verde claro
+    SLOW_COLOR = "#FFFF80"          # Amarillo claro
+    OFFLINE_COLOR = "#FF8080"       # Rojo claro
+    RESPONSE_TIME_COLOR = "#FFC080" # Naranja claro
 
-class TVIPPlayer(QMainWindow):
+    # Estilo para el botón de menú
+    MENU_BUTTON_STYLE = """
+        QPushButton {
+            background-color: #FF8000;
+            color: #1E1E1E;
+            border: 2px solid #FFFFFF;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 18px;
+            padding: 5px;
+        }
+        QPushButton:hover {
+            background-color: #FF9A2E;
+        }
+    """
+
+    # Estilo para la barra de título
+    TITLE_BAR_STYLE = """
+        QMainWindow::title {
+            background-color: #FF8000;
+            color: #1E1E1E;
+            font-weight: bold;
+            height: 30px;
+            padding-left: 10px;
+            border-bottom: 2px solid #FF9A2E;
+        }
+        QMenuBar {
+            background-color: #FF8000;
+            color: #1E1E1E;
+            border-bottom: 2px solid #FF9A2E;
+            font-weight: bold;
+        }
+        QMenuBar::item {
+            background-color: #FF8000;
+            color: #1E1E1E;
+            padding: 5px 10px;
+            margin: 0px;
+        }
+        QMenuBar::item:selected {
+            background-color: #FF9A2E;
+        }
+        QMenu {
+            background-color: #2D2D2D;
+            color: #FFFFFF;
+            border: 1px solid #FF8000;
+        }
+        QMenu::item:selected {
+            background-color: #FF8000;
+            color: #1E1E1E;
+        }
+        QStatusBar {
+            background-color: #2D2D2D;
+            color: #FFFFFF;
+            border-top: 1px solid #FF8000;
+        }
+        QStatusBar QLabel {
+            padding: 3px 5px;
+        }
+    """
+
+class ModernTVIPPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('TV IP Player')
+        self.setWindowTitle('TV IP Player - Moderno')
         self.setGeometry(100, 100, 1200, 700)
         self.setMinimumSize(900, 600)
         self.installEventFilter(self)
@@ -141,10 +200,10 @@ class TVIPPlayer(QMainWindow):
         self.sidebar_visible = True
         self.is_fullscreen_mode = False
         self.sidebar_hover_margin = 20
-        self.sidebar_position = "right"  # Nueva variable para controlar la posición del sidebar (right o left)
+        self.sidebar_position = "right"
         self.mouse_check_timer = QTimer(self)
         self.mouse_check_timer.timeout.connect(self.check_mouse_position)
-        self.mouse_check_timer.start(100)
+        self.mouse_check_timer.start(200)  # Verificar cada 200ms
         
         # Variables para control de video
         self.current_audio_track = 0
@@ -210,7 +269,28 @@ class TVIPPlayer(QMainWindow):
         sidebar_layout.addWidget(channels_label)
         
         self.channel_list = QListWidget()
-        self.channel_list.setStyleSheet(ModernStyle.LIST_STYLE)
+        self.channel_list.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {ModernStyle.MEDIUM_BG};
+                color: {ModernStyle.CHANNEL_NAME_COLOR};
+                border: 1px solid {ModernStyle.LIGHT_BG};
+                border-radius: 4px;
+                outline: none;
+                font-size: 11pt;
+            }}
+            QListWidget::item {{
+                padding: 6px;
+                min-height: 24px;
+                border-bottom: 1px solid {ModernStyle.DARK_BG};
+            }}
+            QListWidget::item:selected {{
+                background-color: {ModernStyle.ACCENT_COLOR};
+                color: {ModernStyle.DARK_BG};
+            }}
+            QListWidget::item:hover {{
+                background-color: {ModernStyle.LIGHT_BG};
+            }}
+        """)
         self.channel_list.itemClicked.connect(self.play_channel)
         sidebar_layout.addWidget(self.channel_list)
         
@@ -238,7 +318,7 @@ class TVIPPlayer(QMainWindow):
         check_button.setStyleSheet(ModernStyle.BUTTON_STYLE)
         check_button.setMinimumWidth(140)
         
-        save_working_button = QPushButton('Guardar Canales Funcionales')
+        save_working_button = QPushButton('Guardar Canales')
         save_working_button.clicked.connect(self.save_working_channels)
         save_working_button.setStyleSheet(ModernStyle.BUTTON_STYLE)
         save_working_button.setMinimumWidth(140)
@@ -252,6 +332,7 @@ class TVIPPlayer(QMainWindow):
         video_container = QWidget()
         self.video_layout = QVBoxLayout(video_container)
         self.video_layout.setContentsMargins(0, 0, 0, 0)
+        self.video_layout.setSpacing(0)  # Eliminar espacio entre widgets
         video_container.setStyleSheet(f"background-color: {ModernStyle.DARK_BG};")
         video_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
@@ -260,6 +341,7 @@ class TVIPPlayer(QMainWindow):
         self.video_widget.setStyleSheet(f"background-color: {ModernStyle.DARK_BG};")
         self.video_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.video_widget.customContextMenuRequested.connect(self.show_video_context_menu)
+        self.video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # Overlay transparente para capturar eventos de ratón
         self.overlay_widget = QWidget(self.video_widget)
@@ -269,20 +351,38 @@ class TVIPPlayer(QMainWindow):
         self.overlay_widget.setStyleSheet("background-color: rgba(0, 0, 0, 0);")
         self.overlay_widget.resize(self.video_widget.size())
         
-        # Botón flotante de menú contextual
-        self.menu_button = QPushButton("≡", self)
-        self.menu_button.setStyleSheet(ModernStyle.MENU_BUTTON_STYLE)
-        self.menu_button.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.menu_button.setFixedSize(28, 28)
-        self.menu_button.setToolTip('Menú de video')
-        self.menu_button.clicked.connect(lambda: self.show_video_context_menu(self.menu_button.pos()))
-        self.menu_button.move(10, 10)
+        # Contenedor para el botón de menú - lo hacemos hijo de la ventana principal, no del video
+        self.button_container = QWidget(self)
+        self.button_container.setGeometry(10, 10, 40, 40)
         
-        self.video_layout.addWidget(self.video_widget)
+        # Botón de menú
+        self.menu_button = QPushButton("≡", self.button_container)
+        self.menu_button.setStyleSheet(ModernStyle.MENU_BUTTON_STYLE)
+        self.menu_button.setFixedSize(40, 40)
+        self.menu_button.setToolTip('Menú de video')
+        self.menu_button.clicked.connect(self.show_fixed_menu)
+        
+        # Inicialmente ocultamos el botón hasta que se reproduzca un video
+        self.button_container.hide()
+        
+        self.video_layout.addWidget(self.video_widget, 1)  # El 1 hace que ocupe todo el espacio disponible
+        
+        # Barra de herramientas con botón de menú
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(5, 5, 5, 5)
+        toolbar_layout.setSpacing(5)
+        
+        # Añadir espacio flexible
+        toolbar_layout.addStretch(1)
+        
+        # Añadir la barra de herramientas al layout de video
+        self.video_layout.addWidget(toolbar)
         
         # Etiqueta de estado
         self.status_label = QLabel("Listo")
         self.status_label.setStyleSheet(ModernStyle.LABEL_STYLE)
+        self.status_label.setMaximumHeight(20)  # Limitar altura de la etiqueta de estado
         self.video_layout.addWidget(self.status_label)
         
         # Añadir componentes al layout principal
@@ -296,7 +396,7 @@ class TVIPPlayer(QMainWindow):
             self.player.set_xwindow(self.video_widget.winId())
         elif sys.platform.startswith('darwin'):
             self.player.set_nsobject(int(self.video_widget.winId()))
-            
+        
         # Intentar cargar la última lista de reproducción si existe
         last_playlist = os.path.join(os.path.dirname(os.path.abspath(__file__)), "last_playlist.json")
         if os.path.exists(last_playlist):
@@ -310,6 +410,20 @@ class TVIPPlayer(QMainWindow):
                 self.status_label.setText(f"Lista cargada: {len(self.playlist_manager.channels)} canales")
             except Exception as e:
                 print(f"Error al cargar la última lista: {e}")
+                
+        # Timer para verificar las pistas de audio disponibles
+        self.audio_check_timer = QTimer(self)
+        self.audio_check_timer.timeout.connect(self.check_audio_tracks)
+        self.audio_check_timer.start(1000)  # Verificar cada segundo
+
+        # Aplicar estilo moderno para la barra de título
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {ModernStyle.DARK_BG};
+                color: {ModernStyle.TEXT_COLOR};
+            }}
+            {ModernStyle.TITLE_BAR_STYLE}
+        """)
 
     def apply_modern_style(self):
         """Aplica un estilo moderno a toda la aplicación"""
@@ -358,7 +472,7 @@ class TVIPPlayer(QMainWindow):
             if relative_x < (window_width - self.sidebar.width() - 10):
                 self.sidebar.hide()
                 self.sidebar_visible = False
-
+                
     def load_playlist(self):
         file_name, _ = QFileDialog.getOpenFileName(self, 'Abrir Lista M3U',
                                                  '', 'M3U Files (*.m3u *.m3u8)')
@@ -406,62 +520,44 @@ class TVIPPlayer(QMainWindow):
                 # Mostrar canales
                 self.update_channel_list('Todos los grupos')
                 
-                self.status_label.setText(f"Lista cargada: {len(self.playlist_manager.channels)} canales")
+                self.status_label.setText(f"Lista cargada: {len(self.playlist_manager.channels)} canales en {len(self.playlist_manager.groups)} grupos")
                 
-                QMessageBox.information(self, 'Lista Cargada', 
-                                      f'Se cargaron {len(self.playlist_manager.channels)} canales en {len(self.playlist_manager.groups)} grupos.')
             except Exception as e:
                 # Mostrar un mensaje de error detallado al usuario
                 error_message = f"Error al cargar la lista: {str(e)}"
                 print(error_message)  # Imprimir en consola para depuración
-                QMessageBox.critical(self, "Error de carga", 
-                                   error_message + "\n\nRevise el formato de la lista y asegúrese de que sea un archivo M3U válido.")
-    
+                
     def update_channel_list(self, group: str):
         self.channel_list.clear()
         channels = self.playlist_manager.get_channels_by_group(group)
         for channel in channels:
-            item = QListWidgetItem()
-            # Crear un widget personalizado para cada canal
-            channel_widget = QWidget()
-            layout = QHBoxLayout(channel_widget)
-            layout.setContentsMargins(5, 5, 5, 5)
-            
-            # Nombre del canal
-            name_label = QLabel(channel.name)
-            name_label.setStyleSheet(f"color: {ModernStyle.TEXT_COLOR}; font-weight: bold;")
-            layout.addWidget(name_label)
-            
-            # Estado del canal
-            status_label = QLabel()
-            if channel.status == 'online':
-                status_label.setStyleSheet('color: #4CAF50;')  # Verde
-                status_label.setText('✓ Online')
-            elif channel.status == 'slow':
-                status_label.setStyleSheet('color: #FF9800;')  # Naranja
-                status_label.setText('⚠ Lento')
-            elif channel.status == 'offline':
-                status_label.setStyleSheet('color: #F44336;')  # Rojo
-                status_label.setText('✗ Offline')
-            else:
-                status_label.setText('? Desconocido')
-            
-            layout.addWidget(status_label)
-            layout.addStretch()
-            
-            # Tiempo de respuesta si está disponible
-            if channel.response_time is not None:
-                response_label = QLabel(f'{channel.response_time:.2f}s')
-                response_label.setStyleSheet(f'color: {ModernStyle.LIGHT_BG};')
-                layout.addWidget(response_label)
-            
-            channel_widget.setLayout(layout)
-            
-            # Configurar el item
-            item.setSizeHint(channel_widget.sizeHint())
+            # Crear un item simple con solo el nombre del canal en texto plano
+            item = QListWidgetItem(channel.name)
             item.setData(Qt.ItemDataRole.UserRole, channel)
-            self.channel_list.addItem(item)
-            self.channel_list.setItemWidget(item, channel_widget)
+            
+            # Establecer color según el estado del canal
+            if channel.status == 'online':
+                item.setForeground(QColor(ModernStyle.ONLINE_COLOR))
+            elif channel.status == 'slow':
+                item.setForeground(QColor(ModernStyle.SLOW_COLOR))
+            elif channel.status == 'offline':
+                item.setForeground(QColor(ModernStyle.OFFLINE_COLOR))
+            else:
+                item.setForeground(QColor(ModernStyle.CHANNEL_NAME_COLOR))
+                
+            # Añadir información de tiempo de respuesta si está disponible
+            if hasattr(channel, 'response_time') and channel.response_time:
+                response_text = f" ({channel.response_time}ms)"
+                response_item = QListWidgetItem(response_text)
+                response_item.setForeground(QColor(ModernStyle.RESPONSE_TIME_COLOR))
+                self.channel_list.addItem(item)
+                self.channel_list.addItem(response_item)
+            else:
+                self.channel_list.addItem(item)
+                
+        # Ocultar el botón de menú cuando se cambia la lista de canales
+        if hasattr(self, 'button_container'):
+            self.button_container.hide()
             
     def play_channel(self, item):
         try:
@@ -480,13 +576,36 @@ class TVIPPlayer(QMainWindow):
                 self.player.set_media(media)
                 self.player.play()
                 
+                # Configurar un timer para verificar cuando el video comience realmente a reproducirse
+                # y mostrar el botón solo cuando haya contenido visible
+                def check_playing_status():
+                    if self.player and self.player.is_playing():
+                        # Asegurar que el botón de menú esté en la posición correcta y visible
+                        self.update_menu_button_position()
+                        # Detener este timer de verificación
+                        check_timer.stop()
+                
+                check_timer = QTimer(self)
+                check_timer.timeout.connect(check_playing_status)
+                check_timer.start(100)  # Verificar cada 100ms
+                
+                # Usar timers para mantener el botón visible durante la reproducción
+                for delay in [1000, 2000, 3000, 4000, 5000]:
+                    QTimer.singleShot(delay, lambda: self.update_menu_button_position())
+                
+                # Configurar un timer para mantener el botón visible periódicamente
+                if hasattr(self, 'button_visibility_timer'):
+                    self.button_visibility_timer.stop()
+                
+                self.button_visibility_timer = QTimer(self)
+                self.button_visibility_timer.timeout.connect(self.update_menu_button_position)
+                self.button_visibility_timer.start(1000)  # Verificar cada segundo
+                
                 self.status_label.setText(f"Reproduciendo: {channel.name}")
                 
         except Exception as e:
             print(f"Error al reproducir canal: {e}")
-            QMessageBox.warning(self, "Error de Reproducción", 
-                              f"No se pudo reproducir el canal: {str(e)}")
-                              
+            
     def check_audio_tracks(self):
         if not self.player.is_playing():
             return
@@ -554,119 +673,233 @@ class TVIPPlayer(QMainWindow):
             return False
             
     def check_channels(self):
-        QMessageBox.information(self, 'Verificación de Canales', 
-                              'Esta función se ha simplificado en esta versión estética.\nUtilice la versión completa para verificar canales.')
+        try:
+            # Configurar una política de manejo de eventos para evitar errores de conexión
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            asyncio.run(self.check_channels_async())
+        except Exception as e:
+            print(f"Error al ejecutar verificación de canales: {e}")
+            
+    async def check_channels_async(self):
+        progress = QProgressDialog('Verificando canales...', 'Cancelar', 0, len(self.playlist_manager.channels), self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(500)  # Mostrar diálogo solo si tarda más de 500ms
+        progress.setValue(0)
+        progress.setStyleSheet(f"""
+            QProgressDialog {{
+                background-color: {ModernStyle.MEDIUM_BG};
+                color: {ModernStyle.TEXT_COLOR};
+            }}
+            QProgressBar {{
+                border: 1px solid {ModernStyle.LIGHT_BG};
+                border-radius: 4px;
+                background-color: {ModernStyle.DARK_BG};
+                text-align: center;
+            }}
+            QProgressBar::chunk {{
+                background-color: {ModernStyle.ACCENT_COLOR};
+                width: 10px;
+            }}
+        """)
+        progress.show()
+        
+        # Variable para rastrear si la operación fue cancelada
+        was_cancelled = False
+        
+        try:
+            # Configurar una función de actualización para el progreso
+            completed_count = 0
+            
+            # Modificar el método check_all_channels para que actualice el progreso
+            original_check_channel = self.playlist_manager.check_channel
+            
+            async def wrapped_check_channel(channel):
+                nonlocal completed_count
+                try:
+                    await original_check_channel(channel)
+                finally:
+                    completed_count += 1
+                    progress.setValue(completed_count)
+                    # Procesar eventos para mantener la UI responsiva
+                    QApplication.processEvents()
+                    
+                    # Verificar si el usuario canceló la operación
+                    if progress.wasCanceled():
+                        raise asyncio.CancelledError("Usuario canceló la operación")
+            
+            # Reemplazar temporalmente el método
+            self.playlist_manager.check_channel = wrapped_check_channel
+            
+            try:
+                # Ejecutar verificación con el método modificado
+                await self.playlist_manager.check_all_channels()
+            finally:
+                # Restaurar el método original
+                self.playlist_manager.check_channel = original_check_channel
+        
+        except asyncio.CancelledError:
+            was_cancelled = True
+            print("Verificación de canales cancelada por el usuario")
+        except Exception as e:
+            print(f"Error al ejecutar verificación de canales: {str(e)}")
+        finally:
+            progress.setValue(len(self.playlist_manager.channels))
+            progress.close()
+            
+            # Actualizar la lista solo si no fue cancelada
+            if not was_cancelled:
+                self.update_channel_list(self.group_filter.currentText())
+                
+                # Mostrar resumen de verificación
+                online_count = sum(1 for ch in self.playlist_manager.channels if ch.status == 'online')
+                slow_count = sum(1 for ch in self.playlist_manager.channels if ch.status == 'slow')
+                offline_count = sum(1 for ch in self.playlist_manager.channels if ch.status == 'offline')
+                
+                if was_cancelled:
+                    message = "La verificación fue cancelada.\n\nResultados parciales:"
+                else:
+                    message = "Verificación completada.\n\nResultados:"
+                
+                print(f'{message}\n'
+                      f'- Canales en línea: {online_count}\n'
+                      f'- Canales lentos: {slow_count}\n'
+                      f'- Canales fuera de línea: {offline_count}\n'
+                      f'- Total verificado: {completed_count}')
     
     def save_working_channels(self):
-        QMessageBox.information(self, 'Guardar Canales', 
-                              'Esta función se ha simplificado en esta versión estética.\nUtilice la versión completa para guardar canales funcionales.')
+        file_name, _ = QFileDialog.getSaveFileName(self, 'Guardar Canales Funcionales',
+                                                '', 'M3U Files (*.m3u *.m3u8)')
+        if file_name:
+            self.playlist_manager.save_working_channels(file_name)
+            print(f'Los canales funcionales han sido guardados en:\n{file_name}')
                               
     def download_playlist(self):
-        QMessageBox.information(self, 'Descargar Lista', 
-                              'Esta función se ha simplificado en esta versión estética.\nUtilice la versión completa para descargar listas.')
+        url, ok = QInputDialog.getText(self, 'Descargar Lista M3U', 
+                                     'Ingrese la URL de la lista M3U:')
+        if ok and url:
+            # Mostrar diálogo de progreso
+            progress = QProgressDialog('Descargando lista...', 'Cancelar', 0, 0, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setStyleSheet(f"""
+                QProgressDialog {{
+                    background-color: {ModernStyle.MEDIUM_BG};
+                    color: {ModernStyle.TEXT_COLOR};
+                }}
+            """)
+            progress.show()
+            
+            try:
+                # Configurar una política de manejo de eventos para evitar errores de conexión
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+                
+                print(f"Iniciando descarga desde URL: {url}")
+                # Descargar la lista con manejo de excepciones mejorado
+                success, message, file_path = self.playlist_manager.download_playlist_from_url_sync(url)
+                
+                if success:
+                    try:
+                        print(f"Descarga exitosa, cargando lista desde: {file_path}")
+                        # Cargar la lista descargada
+                        self.playlist_manager.load_playlist(file_path)
+                        self.playlist_manager.save_last_playlist()
+                        
+                        # Actualizar filtro de grupos
+                        self.group_filter.clear()
+                        self.group_filter.addItem('Todos los grupos')
+                        self.group_filter.addItems(self.playlist_manager.groups)
+                        
+                        # Mostrar canales
+                        self.update_channel_list('Todos los grupos')
+                        
+                        self.status_label.setText(f"Lista descargada: {len(self.playlist_manager.channels)} canales en {len(self.playlist_manager.groups)} grupos")
+                        
+                    except Exception as e:
+                        print(f"Error al cargar la lista descargada: {e}")
+                else:
+                    print(f"Error en la descarga: {message}")
+            except Exception as e:
+                print(f"Error inesperado durante la descarga: {e}")
+            finally:
+                progress.close()
+    
+    def show_fixed_menu(self):
+        """Muestra un menú contextual fijo con las opciones principales"""
+        try:
+            print("Mostrando menú fijo")
+            
+            # Crear un menú directamente
+            menu = QMenu(self)
+            menu.setStyleSheet(ModernStyle.MENU_STYLE)
+            
+            # Opción de pantalla completa
+            fullscreen_action = QAction('Pantalla Completa', self)
+            fullscreen_action.triggered.connect(self.toggle_fullscreen)
+            menu.addAction(fullscreen_action)
+            
+            # Opciones de escala de video
+            scale_menu = QMenu('Escala de Video', self)
+            scale_menu.setStyleSheet(ModernStyle.MENU_STYLE)
+            
+            for scale in ['0.5', '1.0', '1.5', '2.0']:
+                scale_action = QAction(f'Escala {scale}x', self)
+                scale_action.triggered.connect(lambda checked, s=scale: self.set_scale_mode(s))
+                scale_menu.addAction(scale_action)
+                
+            menu.addMenu(scale_menu)
+            
+            # Opciones de relación de aspecto
+            aspect_menu = QMenu('Relación de Aspecto', self)
+            aspect_menu.setStyleSheet(ModernStyle.MENU_STYLE)
+            
+            for aspect, label in [
+                ('', 'Predeterminado'),
+                ('16:9', '16:9 Panorámico'),
+                ('4:3', '4:3 Estándar'),
+                ('1:1', '1:1 Cuadrado'),
+                ('16:10', '16:10 Pantalla Ancha'),
+                ('2.35:1', '2.35:1 Cinemático')
+            ]:
+                aspect_action = QAction(label, self)
+                aspect_action.triggered.connect(lambda checked, a=aspect: self.set_aspect_ratio(a))
+                aspect_menu.addAction(aspect_action)
+                
+            menu.addMenu(aspect_menu)
+            
+            # Pistas de audio si están disponibles
+            if hasattr(self, 'audio_tracks') and self.audio_tracks:
+                try:
+                    audio_menu = QMenu('Pistas de Audio', self)
+                    audio_menu.setStyleSheet(ModernStyle.MENU_STYLE)
+                    
+                    for track in self.audio_tracks:
+                        track_id, track_name = track
+                        track_action = QAction(f'{track_name.decode("utf-8", errors="replace")}', self)
+                        track_action.triggered.connect(lambda checked, t=track_id: self.change_audio_track(t))
+                        audio_menu.addAction(track_action)
+                    
+                    menu.addMenu(audio_menu)
+                except Exception as e:
+                    print(f"Error al añadir pistas de audio al menú: {e}")
+        
+            # Mostrar el menú en la posición del cursor
+            cursor_pos = QCursor.pos()
+            print(f"Mostrando menú en posición: {cursor_pos.x()}, {cursor_pos.y()}")
+            menu.exec(cursor_pos)
+            
+        except Exception as e:
+            print(f"Error al mostrar el menú fijo: {e}")
+            traceback.print_exc()
     
     def show_video_context_menu(self, position):
-        context_menu = QMenu(self)
-        context_menu.setStyleSheet(ModernStyle.MENU_STYLE)
-        
-        # Acción de pantalla completa
-        fullscreen_action = QAction('Pantalla Completa', self)
-        fullscreen_action.triggered.connect(self.toggle_fullscreen)
-        context_menu.addAction(fullscreen_action)
-        
-        # Opciones de cambio de tamaño de video
-        scale_menu = QMenu('Escala de Video', self)
-        scale_menu.setStyleSheet(ModernStyle.MENU_STYLE)
-        scales = {
-            'Ajuste Original (1.0x)': 1.0,
-            'Ajuste a Ventana (0.5x)': 0.5,
-            'Ajuste Doble (2.0x)': 2.0
-        }
-        
-        # Crear grupo de acciones para escala
-        scale_group = QActionGroup(self)
-        scale_group.setExclusive(True)
-        
-        for name, scale in scales.items():
-            action = QAction(name, self)
-            action.setCheckable(True)
-            action.setChecked(abs(self.current_scale - scale) < 0.01)  # Comparación con tolerancia
-            action.triggered.connect(lambda checked, s=scale: self.set_scale_mode(s))
-            scale_group.addAction(action)
-            scale_menu.addAction(action)
-        
-        context_menu.addMenu(scale_menu)
-        
-        # Opciones de relación de aspecto
-        aspect_menu = QMenu('Relación de Aspecto', self)
-        aspect_menu.setStyleSheet(ModernStyle.MENU_STYLE)
-        aspect_ratios = {
-            'Auto': '',
-            '16:9': '16:9',
-            '4:3': '4:3',
-            '1:1': '1:1',
-            '16:10': '16:10',
-            '2.35:1 (Cinemascope)': '2.35:1'
-        }
-        
-        # Crear grupo de acciones para relación de aspecto
-        aspect_group = QActionGroup(self)
-        aspect_group.setExclusive(True)
-        
-        for name, ratio in aspect_ratios.items():
-            action = QAction(name, self)
-            action.setCheckable(True)
-            action.setChecked(self.current_aspect_ratio == ratio)
-            action.triggered.connect(lambda checked, r=ratio: self.set_aspect_ratio(r))
-            aspect_group.addAction(action)
-            aspect_menu.addAction(action)
-        
-        context_menu.addMenu(aspect_menu)
-        
-        # Opciones de pistas de audio (si está reproduciendo)
-        if self.player.is_playing():
-            try:
-                audio_tracks = []
-                # Obtener pistas de audio disponibles
-                media = self.player.get_media()
-                if media:
-                    # Método alternativo para obtener pistas de audio
-                    audio_track_count = self.player.audio_get_track_count()
-                    current_track = self.player.audio_get_track()
-                    
-                    if audio_track_count > 1:
-                        audio_menu = QMenu('Pistas de Audio', self)
-                        audio_menu.setStyleSheet(ModernStyle.MENU_STYLE)
-                        
-                        # Añadir pista por defecto
-                        action = QAction("Pista por defecto (0)", self)
-                        action.setCheckable(True)
-                        action.setChecked(current_track == 0)
-                        action.triggered.connect(lambda checked: self.change_audio_track(0))
-                        audio_menu.addAction(action)
-                        
-                        # Añadir pistas adicionales
-                        for i in range(1, audio_track_count):
-                            action = QAction(f"Pista {i}", self)
-                            action.setCheckable(True)
-                            action.setChecked(current_track == i)
-                            action.triggered.connect(lambda checked, tid=i: self.change_audio_track(tid))
-                            audio_menu.addAction(action)
-                        
-                        context_menu.addMenu(audio_menu)
-            except Exception as e:
-                print(f"Error al obtener pistas de audio: {e}")
-        
-        # Mostrar el menú en la posición global
-        if isinstance(position, QListWidgetItem):
-            # Si se llamó desde un botón, usar la posición del botón
-            position = self.menu_button.mapToGlobal(self.menu_button.rect().bottomRight())
-        else:
-            # Si se llamó desde un clic derecho, usar la posición del clic
-            position = self.video_widget.mapToGlobal(position)
-            
-        context_menu.exec(position)
-        
+        """Muestra el menú contextual para el widget de video"""
+        try:
+            print(f"Iniciando show_video_context_menu con posición: {position}")
+            # Redirigir al menú fijo para mantener consistencia
+            self.show_fixed_menu()
+        except Exception as e:
+            print(f"Error en show_video_context_menu: {e}")
+            traceback.print_exc()
+    
     def set_scale_mode(self, scale):
         try:
             scale = float(scale)
@@ -708,6 +941,57 @@ class TVIPPlayer(QMainWindow):
             print(f"Error al cambiar la relación de aspecto: {e}")
             return False
             
+    def update_menu_button_position(self):
+        """Actualiza la posición del botón de menú para que aparezca sobre el video"""
+        try:
+            if hasattr(self, 'button_container') and hasattr(self, 'video_widget'):
+                # Verificar si hay reproducción activa
+                if not self.player or not self.player.is_playing():
+                    self.button_container.hide()
+                    return
+                    
+                # Obtener coordenadas globales del widget de video
+                video_pos = self.video_widget.mapToGlobal(QPoint(0, 0))
+                # Convertir a coordenadas relativas a la ventana principal
+                rel_pos = self.mapFromGlobal(video_pos)
+                
+                # Posicionar el botón en la esquina superior izquierda del video
+                self.button_container.move(rel_pos.x() + 10, rel_pos.y() + 10)
+                
+                # Asegurar que el botón esté visible solo si hay reproducción
+                if self.player and self.player.is_playing():
+                    self.button_container.show()
+                    self.button_container.raise_()
+                    self.menu_button.raise_()
+                else:
+                    self.button_container.hide()
+                
+                print(f"Botón posicionado en: {rel_pos.x() + 10}, {rel_pos.y() + 10}")
+        except Exception as e:
+            print(f"Error al actualizar posición del botón: {e}")
+    
+    def stop_playback(self):
+        """Detiene la reproducción actual"""
+        if self.player:
+            self.player.stop()
+            self.status_label.setText("Reproducción detenida")
+            
+            # Ocultar el botón de menú cuando se detiene la reproducción
+            if hasattr(self, 'button_container'):
+                self.button_container.hide()
+                
+            # Detener el timer de visibilidad
+            if hasattr(self, 'button_visibility_timer'):
+                self.button_visibility_timer.stop()
+                
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'overlay_widget'):
+            self.overlay_widget.resize(self.video_widget.size())
+            
+        # Actualizar posición del botón de menú
+        self.update_menu_button_position()
+    
     def keyPressEvent(self, event):
         # Asegura que los atajos funcionen incluso si el foco está en el botón flotante
         if event.key() == Qt.Key.Key_F11 or \
@@ -719,18 +1003,8 @@ class TVIPPlayer(QMainWindow):
         else:
             super().keyPressEvent(event)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, 'menu_button'):
-            # Actualizar posición del botón flotante
-            video_rect = self.video_widget.geometry()
-            video_top_left = self.video_widget.mapTo(self, video_rect.topLeft())
-            self.menu_button.move(video_top_left.x() + 10, video_top_left.y() + 10)
-        if hasattr(self, 'overlay_widget'):
-            self.overlay_widget.resize(self.video_widget.size())
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     app = QApplication(sys.argv)
-    player = TVIPPlayer()
+    player = ModernTVIPPlayer()
     player.show()
     sys.exit(app.exec())
