@@ -14,3 +14,16 @@ env/
 
 # Project specific
 last_playlist.json
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Test files
+test_*.m3u
+test_*.py
+
+# Windows
+Thumbs.db
+desktop.ini
