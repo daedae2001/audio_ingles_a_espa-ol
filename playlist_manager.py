@@ -111,92 +111,77 @@ class PlaylistManager:
             channel.response_time = None
             channel.last_check = datetime.now().isoformat()
 
-    async def check_all_channels(self) -> None:
-        # Limitar el número de conexiones simultáneas
-        MAX_CONCURRENT = 50  # Ajustar según necesidad y recursos del sistema
+    async def check_all_channels(self, progress_callback=None) -> None:
+        """Verifica el estado de todos los canales en la lista.
+        
+        Args:
+            progress_callback: Función de callback para reportar el progreso.
+                              Debe aceptar (nombre_canal, actual, total) y devolver
+                              True para continuar o False para cancelar.
+        """
+        MAX_CONCURRENT = 50
         semaphore = asyncio.Semaphore(MAX_CONCURRENT)
         
-        async def check_channel_with_semaphore(channel):
+        # Función para verificar un canal con semáforo
+        async def check_with_semaphore(channel, index, total):
             async with semaphore:
-                return await self.check_channel(channel)
+                try:
+                    await self.check_channel(channel)
+                    # Llamar al callback de progreso si existe
+                    if progress_callback:
+                        try:
+                            # Evitar problemas con caracteres especiales en el nombre
+                            safe_name = str(channel.name).encode('utf-8', 'replace').decode('utf-8')
+                            should_continue = progress_callback(safe_name, index + 1, total)
+                            if not should_continue:
+                                return False  # Señal para cancelar
+                        except Exception as e:
+                            print(f"Error en callback de progreso: {str(e)}")
+                    return True
+                except Exception as e:
+                    print(f"Error al verificar canal {channel.name}: {str(e)}")
+                    channel.status = 'offline'
+                    channel.response_time = 0
+                    # Llamar al callback de progreso incluso en caso de error
+                    if progress_callback:
+                        try:
+                            safe_name = str(channel.name).encode('utf-8', 'replace').decode('utf-8')
+                            should_continue = progress_callback(safe_name, index + 1, total)
+                            if not should_continue:
+                                return False
+                        except Exception as e:
+                            print(f"Error en callback de progreso: {str(e)}")
+                    return True
         
-        # Crear tareas para verificar cada canal
+        # Crear tareas para todos los canales
         tasks = []
-        for channel in self.channels:
-            task = asyncio.create_task(check_channel_with_semaphore(channel))
+        total = len(self.channels)
+        
+        for i, channel in enumerate(self.channels):
+            task = asyncio.create_task(check_with_semaphore(channel, i, total))
             tasks.append(task)
         
-        # Procesar las tareas con manejo de errores
-        completed_tasks = 0
-        failed_tasks = 0
-        error_types = {}
-        
+        # Esperar a que todas las tareas se completen o se cancelen
         try:
-            for task in asyncio.as_completed(tasks):
-                try:
-                    await task
-                    completed_tasks += 1
-                except asyncio.CancelledError:
-                    # Cancelar todas las tareas pendientes
-                    for t in tasks:
-                        if not t.done():
-                            t.cancel()
-                    raise  # Re-raise para que se maneje en el nivel superior
-                except Exception as e:
-                    # Registrar el tipo de error para análisis
-                    error_type = type(e).__name__
-                    if error_type not in error_types:
-                        error_types[error_type] = 0
-                    error_types[error_type] += 1
-                    
-                    print(f"Error en tarea de verificación: {e}")
-                    failed_tasks += 1
+            results = await asyncio.gather(*tasks)
+            # Si alguna tarea devuelve False, se canceló el proceso
+            if False in results:
+                # Cancelar tareas pendientes
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
         except asyncio.CancelledError:
-            print("Verificación cancelada. Limpiando recursos...")
-            # Asegurarse de que todas las tareas se cancelen
+            # Cancelar todas las tareas pendientes
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            try:
-                # Esperar a que todas las tareas se cancelen (con timeout)
-                await asyncio.wait(tasks, timeout=5)
-            except Exception as e:
-                print(f"Error durante la cancelación de tareas: {e}")
             raise
-        finally:
-            # Limpiar recursos
+        except Exception as e:
+            print(f"Error durante la verificación de canales: {str(e)}")
+            # Cancelar tareas pendientes
             for task in tasks:
                 if not task.done():
                     task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-        
-        # Mostrar resumen de errores
-        if error_types:
-            print("Resumen de errores encontrados:")
-            for error_type, count in error_types.items():
-                print(f"  - {error_type}: {count} ocurrencias")
-        
-        print(f"Verificación completada: {completed_tasks} canales procesados, {failed_tasks} fallidos")
-        
-        # Guardar los resultados
-        try:
-            self.save_last_playlist()
-        except Exception as e:
-            print(f"Error al guardar la lista de reproducción: {e}")
-            # Intentar guardar en una ubicación alternativa si falla
-            try:
-                backup_path = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}_last_playlist.json"
-                with open(backup_path, 'w', encoding='utf-8') as f:
-                    json.dump({
-                        'channels': [asdict(ch) for ch in self.channels],
-                        'groups': self.groups
-                    }, f, ensure_ascii=False, indent=2)
-                print(f"Se ha creado una copia de seguridad en: {backup_path}")
-            except Exception as backup_error:
-                print(f"No se pudo crear copia de seguridad: {backup_error}")
     
     def save_working_channels(self, file_path: str) -> None:
         working_channels = [ch for ch in self.channels if ch.status in ['online', 'slow']]
@@ -443,3 +428,305 @@ class PlaylistManager:
     def download_playlist_from_url_sync(self, url: str) -> Tuple[bool, str, str]:
         """Versión sincrónica del método download_playlist_from_url."""
         return asyncio.run(self.download_playlist_from_url(url))
+        
+    def remove_duplicate_channels(self, progress_callback=None) -> Dict:
+        """
+        Elimina canales duplicados basados en la URL y unifica nombres similares.
+        
+        Esta función:
+        1. Elimina canales duplicados por URL, combinando sus atributos
+        2. Unifica nombres similares de canales (ej. "Canal HD", "Canal FHD", etc.)
+        3. Ordena los canales por nombre
+        
+        Args:
+            progress_callback: Función opcional para reportar progreso.
+                              Recibe (porcentaje, mensaje) y debe devolver True para continuar
+        
+        Returns:
+            Dict: Diccionario con información sobre el proceso de unificación
+        """
+        if not self.channels:
+            print("No hay canales para unificar")
+            if progress_callback:
+                progress_callback(100, "No hay canales para unificar")
+            return {"unified_groups": {}}
+            
+        try:
+            print(f"Iniciando proceso de unificación con {len(self.channels)} canales")
+        except UnicodeEncodeError:
+            print("Iniciando proceso de unificación...")
+        
+        if progress_callback:
+            progress_callback(5, "Iniciando proceso de unificación...")
+            
+        # Diccionario para agrupar canales por URL
+        channels_by_url = {}
+        
+        # Patrones comunes para normalizar nombres
+        name_patterns = {
+            r'(?i)\s*(HD|SD|FHD|UHD|4K|FULL HD)': '',  # Eliminar indicadores de calidad
+            r'(?i)\s*\(\d+\)': '',  # Eliminar números entre paréntesis
+            r'(?i)\s*\[\d+\]': '',  # Eliminar números entre corchetes
+            r'(?i)\s*\+\d+': '',    # Eliminar +1, +2, etc.
+            r'(?i)\s*\d+p': '',     # Eliminar resoluciones como 720p, 1080p
+            r'(?i)\s*TV\b': '',     # Eliminar "TV" al final
+            r'(?i)\s*TELEVISION\b': '', # Eliminar "TELEVISION"
+            r'(?i)^EL\s+': '',      # Eliminar "EL" al principio
+            r'(?i)^LA\s+': '',      # Eliminar "LA" al principio
+            r'(?i)^LOS\s+': '',     # Eliminar "LOS" al principio
+            r'(?i)^LAS\s+': '',     # Eliminar "LAS" al principio
+        }
+        
+        print("Fase 1: Agrupando canales por URL y normalizando nombres...")
+        if progress_callback:
+            progress_callback(10, "Fase 1: Agrupando canales por URL y normalizando nombres...")
+        
+        # Primera pasada: agrupar por URL y normalizar nombres
+        normalized_names_map = {}  # Mapeo de nombre normalizado a lista de canales
+        
+        for i, channel in enumerate(self.channels):
+            if progress_callback and i % 50 == 0:
+                percent = 10 + (i / len(self.channels) * 20)
+                progress_callback(percent, f"Procesando canal {i+1} de {len(self.channels)}...")
+                
+            if not channel.url:
+                continue
+                
+            # Normalizar el nombre
+            normalized_name = channel.name
+            for pattern, replacement in name_patterns.items():
+                normalized_name = re.sub(pattern, replacement, normalized_name)
+            normalized_name = normalized_name.strip().lower()
+            
+            # Agrupar por URL
+            if channel.url in channels_by_url:
+                channels_by_url[channel.url].append((channel, normalized_name))
+            else:
+                channels_by_url[channel.url] = [(channel, normalized_name)]
+                
+            # Agrupar por nombre normalizado
+            if normalized_name:
+                if normalized_name in normalized_names_map:
+                    normalized_names_map[normalized_name].append(channel)
+                else:
+                    normalized_names_map[normalized_name] = [channel]
+        
+        try:
+            print(f"Encontrados {len(channels_by_url)} URLs únicas")
+        except UnicodeEncodeError:
+            print("Procesando URLs únicas...")
+        
+        # Contar canales duplicados por URL
+        duplicate_count = 0
+        for url, channel_list in channels_by_url.items():
+            if len(channel_list) > 1:
+                duplicate_count += len(channel_list) - 1
+                
+        try:
+            print(f"Encontrados {duplicate_count} canales duplicados por URL")
+        except UnicodeEncodeError:
+            print(f"Procesando {duplicate_count} canales duplicados...")
+        
+        print("Fase 2: Unificando canales duplicados por URL...")
+        if progress_callback:
+            progress_callback(30, "Fase 2: Unificando canales duplicados por URL...")
+        
+        # Segunda pasada: unificar canales duplicados por URL
+        unified_channels = []
+        for i, (url, channel_list) in enumerate(channels_by_url.items()):
+            if progress_callback and i % 20 == 0:
+                percent = 30 + (i / len(channels_by_url) * 30)
+                progress_callback(percent, f"Unificando canales con URL similar ({i+1}/{len(channels_by_url)})...")
+                
+            if len(channel_list) == 1:
+                # No hay duplicados para esta URL
+                unified_channels.append(channel_list[0][0])
+            else:
+                # Combinar atributos de canales duplicados
+                try:
+                    print(f"  Combinando {len(channel_list)} canales con URL: {url[:50]}...")
+                except UnicodeEncodeError:
+                    print(f"  Combinando {len(channel_list)} canales...")
+                
+                combined_channel = self._combine_duplicate_channels(channel_list)
+                
+                try:
+                    print(f"    Nombre elegido: {combined_channel.name}")
+                except UnicodeEncodeError:
+                    print("    Nombre procesado correctamente")
+                
+                unified_channels.append(combined_channel)
+        
+        try:
+            print(f"Después de eliminar duplicados por URL: {len(unified_channels)} canales")
+        except UnicodeEncodeError:
+            print(f"Canales después de eliminar duplicados: {len(unified_channels)}")
+        
+        print("Fase 3: Unificando nombres similares...")
+        if progress_callback:
+            progress_callback(60, "Fase 3: Unificando nombres similares...")
+        
+        # Tercera pasada: unificar nombres muy similares (incluso con URLs diferentes)
+        # Primero, agrupar por raíz del nombre
+        name_roots = {}
+        for i, channel in enumerate(unified_channels):
+            if progress_callback and i % 50 == 0:
+                percent = 60 + (i / len(unified_channels) * 20)
+                progress_callback(percent, f"Procesando nombres similares ({i+1}/{len(unified_channels)})...")
+                
+            # Normalizar y simplificar aún más el nombre
+            simple_name = channel.name.lower()
+            for pattern, replacement in name_patterns.items():
+                simple_name = re.sub(pattern, replacement, simple_name)
+            
+            # Eliminar caracteres no alfanuméricos y espacios múltiples
+            simple_name = re.sub(r'[^\w\s]', '', simple_name)
+            simple_name = re.sub(r'\s+', ' ', simple_name).strip()
+            
+            # Obtener las primeras palabras significativas (hasta 3 palabras)
+            words = simple_name.split()
+            if len(words) > 0:
+                # Usar las primeras palabras como clave para agrupar
+                name_key = ' '.join(words[:min(3, len(words))])
+                
+                if name_key in name_roots:
+                    name_roots[name_key].append(channel)
+                else:
+                    name_roots[name_key] = [channel]
+        
+        # Unificar nombres similares
+        unified_names_count = 0
+        unified_groups = {}  # Para guardar información sobre los grupos unificados
+        
+        for name_key, channels in name_roots.items():
+            if len(channels) > 1:
+                # Obtener el mejor nombre para este grupo
+                names = [ch.name for ch in channels]
+                best_name = self._get_best_channel_name(names)
+                
+                # Guardar información sobre este grupo unificado
+                try:
+                    print(f"  Grupo '{name_key}' - {len(channels)} canales - Nombre elegido: {best_name}")
+                    print(f"    Nombres originales: {', '.join(names)}")
+                    unified_groups[name_key] = {
+                        "chosen_name": best_name,
+                        "names": names,
+                        "count": len(channels)
+                    }
+                except UnicodeEncodeError:
+                    print(f"  Procesando grupo con {len(channels)} canales")
+                
+                # Asignar el mejor nombre a todos los canales de este grupo
+                for channel in channels:
+                    if channel.name != best_name:
+                        unified_names_count += 1
+                        channel.name = best_name
+        
+        try:
+            print(f"Unificados {unified_names_count} nombres de canales")
+        except UnicodeEncodeError:
+            print(f"Nombres unificados: {unified_names_count}")
+        
+        print("Fase 4: Ordenando canales por nombre...")
+        if progress_callback:
+            progress_callback(80, "Fase 4: Ordenando canales por nombre...")
+        
+        # Ordenar canales por nombre
+        unified_channels.sort(key=lambda x: x.name.lower())
+        
+        # Actualizar la lista de canales
+        self.channels = unified_channels
+        
+        # Actualizar grupos
+        self.groups = sorted(list(set(ch.group for ch in self.channels if ch.group)))
+        if 'Sin Grupo' in self.groups:
+            # Asegurar que "Sin Grupo" esté al final
+            self.groups.remove('Sin Grupo')
+            self.groups.append('Sin Grupo')
+            
+        try:
+            print(f"Proceso completado: {len(self.channels)} canales en {len(self.groups)} grupos")
+        except UnicodeEncodeError:
+            print(f"Proceso completado con {len(self.channels)} canales")
+            
+        if progress_callback:
+            progress_callback(100, f"Proceso completado: {len(self.channels)} canales")
+            
+        # Devolver información sobre el proceso
+        return {
+            "unified_groups": unified_groups,
+            "total_channels": len(self.channels),
+            "duplicates_removed": duplicate_count,
+            "names_unified": unified_names_count
+        }
+    
+    def _combine_duplicate_channels(self, channel_list):
+        """
+        Combina los atributos de canales duplicados en uno solo.
+        
+        Args:
+            channel_list: Lista de tuplas (canal, nombre_normalizado)
+            
+        Returns:
+            Channel: Canal combinado con los mejores atributos
+        """
+        # Ordenar por estado (online > slow > unknown > offline)
+        status_priority = {'online': 0, 'slow': 1, 'unknown': 2, 'offline': 3}
+        sorted_channels = sorted(channel_list, key=lambda x: status_priority.get(x[0].status, 4))
+        
+        # Usar el primer canal (mejor estado) como base
+        base_channel = sorted_channels[0][0]
+        
+        # Elegir el mejor nombre
+        all_names = [ch[0].name for ch in channel_list]
+        best_name = self._get_best_channel_name(all_names)
+        
+        # Combinar atributos
+        combined = Channel(
+            name=best_name,
+            url=base_channel.url,
+            group=base_channel.group,
+            logo=next((ch[0].logo for ch in sorted_channels if ch[0].logo), None),
+            status=base_channel.status,
+            response_time=base_channel.response_time,
+            last_check=base_channel.last_check
+        )
+        
+        return combined
+    
+    def _get_best_channel_name(self, names):
+        """
+        Elige el mejor nombre entre varias opciones para un canal.
+        
+        Args:
+            names: Lista de nombres de canal
+            
+        Returns:
+            str: El nombre más representativo
+        """
+        if not names:
+            return ""
+            
+        # Preferir nombres más largos que no sean excesivamente largos
+        filtered_names = [name for name in names if 3 < len(name) < 30]
+        if not filtered_names:
+            filtered_names = names
+            
+        # Preferir nombres sin caracteres especiales extraños
+        clean_names = [name for name in filtered_names 
+                      if not re.search(r'[^\w\s\-+&()[\]áéíóúÁÉÍÓÚñÑ]', name)]
+        if clean_names:
+            filtered_names = clean_names
+            
+        # Preferir nombres sin números al final
+        names_without_numbers = [name for name in filtered_names 
+                                if not re.search(r'\d+$', name)]
+        if names_without_numbers:
+            filtered_names = names_without_numbers
+            
+        # Si hay varios candidatos, elegir el más corto entre ellos
+        if filtered_names:
+            return min(filtered_names, key=len)
+        
+        # Si no hay candidatos después del filtrado, devolver el primero
+        return names[0]
